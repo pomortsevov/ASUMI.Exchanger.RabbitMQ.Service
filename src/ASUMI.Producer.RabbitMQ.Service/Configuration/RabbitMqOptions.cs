@@ -40,6 +40,13 @@ public sealed class RabbitMqOptions
     [Range(1, 3600)]
     public int NetworkRecoveryIntervalSeconds { get; set; } = 10;
 
+    /// <summary>
+    /// Пауза между попытками подключения, если RabbitMQ недоступен. Не путать с NetworkRecoveryIntervalSeconds —
+    /// тот используется после того, как соединение уже было установлено, а потом упало.
+    /// </summary>
+    [Range(1, 300)]
+    public int ReconnectIntervalSeconds { get; set; } = 5;
+
     [Required]
     public string ConnectionName { get; set; } = "ASUMI.Producer.RabbitMQ.Service";
 }

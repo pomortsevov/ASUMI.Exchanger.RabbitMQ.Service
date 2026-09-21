@@ -53,7 +53,7 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
                 return channel;
 
             await EnsureConnectedAsync(cancellationToken);
-            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(_options.ReconnectIntervalSeconds), cancellationToken);
         }
 
         throw new OperationCanceledException(cancellationToken);
@@ -102,14 +102,14 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
                 _connection = connection;
                 _logger.LogInformation("Connected to RabbitMQ. ConnectionName={ConnectionName}", _options.ConnectionName);
             }
-catch (Exception ex)
-{
-    // Пишем только тип и сообщение без стектрейса — иначе лог засоряется при недоступном RabbitMQ.
-    _logger.LogWarning(
-        "Could not connect to RabbitMQ at {Host}:{Port}{VHost} ({ExceptionType}): {Message}. Will retry.",
-        _options.HostName, _options.Port, _options.VirtualHost,
-        ex.GetType().Name, ex.Message);
-}
+            catch (Exception ex)
+            {
+                // Пишем только тип и сообщение без стектрейса — иначе лог засоряется при недоступном RabbitMQ.
+                _logger.LogWarning(
+                    "Could not connect to RabbitMQ at {Host}:{Port}{VHost} ({ExceptionType}): {Message}. Will retry in {RetryInterval}s.",
+                    _options.HostName, _options.Port, _options.VirtualHost,
+                    ex.GetType().Name, ex.Message, _options.ReconnectIntervalSeconds);
+            }
         }
         finally
         {
