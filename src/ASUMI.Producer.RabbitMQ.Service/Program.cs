@@ -60,6 +60,7 @@ public class Program
 
                     services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
                     services.AddSingleton<IRabbitMqTopologyInitializer, RabbitMqTopologyInitializer>();
+                    services.AddSingleton<IMessagePublisher, RabbitMqMessagePublisher>();
 
                     services.AddHostedService<RabbitMqTopologyHostedService>();
                     services.AddHostedService<FilePublisherWorker>();

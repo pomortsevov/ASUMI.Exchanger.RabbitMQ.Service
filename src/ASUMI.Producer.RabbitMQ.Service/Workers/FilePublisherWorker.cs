@@ -1,3 +1,4 @@
+using ASUMI.Producer.RabbitMQ.Service.Abstractions;
 using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -10,13 +11,16 @@ public sealed class FilePublisherWorker : BackgroundService
 {
     private readonly ILogger<FilePublisherWorker> _logger;
     private readonly FilePublisherOptions _options;
+    private readonly IMessagePublisher _publisher;
 
     public FilePublisherWorker(
         ILogger<FilePublisherWorker> logger,
-        IOptions<FilePublisherOptions> options)
+        IOptions<FilePublisherOptions> options,
+        IMessagePublisher publisher)
     {
         _logger = logger;
         _options = options.Value;
+        _publisher = publisher;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -115,11 +119,22 @@ public sealed class FilePublisherWorker : BackgroundService
             "Read {File} ({Chars} chars, {Bytes} bytes UTF-8).",
             fi.Name, content.Length, body.Length);
 
-        // 2. TODO: публикация в RabbitMQ — добавим на следующем этапе.
-        // Пока просто логируем.
-        _logger.LogInformation("Would publish {File} to RabbitMQ (not implemented yet).", fi.Name);
+        // 2. Публикация в RabbitMQ.
+        // Если публикация не удалась — НЕ перемещаем и НЕ удаляем файл: вернёмся к нему на следующем цикле.
+        var published = await _publisher.PublishAsync(body, stoppingToken);
+        if (!published)
+        {
+            _logger.LogWarning(
+                "RabbitMQ not available — {File} will be retried on next cycle.",
+                fi.Name);
+            return;
+        }
 
-        // 3. Переместить в processed
+        _logger.LogInformation(
+            "Published {File} ({Bytes} bytes) to exchange {Exchange} with routingKey {RoutingKey}.",
+            fi.Name, body.Length, "asumi.exchange", "asumi.json");
+
+        // 3. Переместить в processed — только после успешной публикации
         var processedName = $"{Path.GetFileNameWithoutExtension(fi.Name)}-" +
                             $"{DateTime.Now:yyyyMMdd-HHmmssfff}{fi.Extension}";
         var dst = Path.Combine(outputDir.FullName, processedName);
