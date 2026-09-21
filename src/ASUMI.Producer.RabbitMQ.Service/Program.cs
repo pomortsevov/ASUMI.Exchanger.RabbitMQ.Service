@@ -63,6 +63,10 @@ public class Program
                     // Провайдер соединения — singleton
                     services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
 
+                    // Топология RabbitMQ: exchange, queue, bind
+                    services.AddSingleton<IRabbitMqTopologyInitializer, RabbitMqTopologyInitializer>();
+                    services.AddHostedService<RabbitMqTopologyHostedService>();
+
                     // Воркеры
                     services.AddHostedService<HeartbeatWorker>();
                 })
