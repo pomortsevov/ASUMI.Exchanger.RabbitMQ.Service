@@ -1,5 +1,7 @@
-﻿using ASUMI.Producer.RabbitMQ.Service.Configuration;
+﻿using ASUMI.Producer.RabbitMQ.Service.Abstractions;
+using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using ASUMI.Producer.RabbitMQ.Service.Hosting;
+using ASUMI.Producer.RabbitMQ.Service.Infrastructure;
 using ASUMI.Producer.RabbitMQ.Service.Workers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -50,6 +52,13 @@ public class Program
                         .Bind(ctx.Configuration.GetSection(AsumiProducerRabbitMqOptions.SectionName))
                         .ValidateDataAnnotations()
                         .ValidateOnStart();
+
+                    services.AddOptions<RabbitMqOptions>()
+                        .Bind(ctx.Configuration.GetSection(RabbitMqOptions.SectionName))
+                        .ValidateDataAnnotations()
+                        .ValidateOnStart();
+
+                    services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
 
                     services.AddHostedService<HeartbeatWorker>();
                 })

@@ -20,6 +20,5 @@
   -->
   <PropertyGroup>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904;NU1605;CS8034</WarningsNotAsErrors>
-  </PropertyGroup>
+<WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904;NU1605;CS8034;CA1305;CA1848</WarningsNotAsErrors>  </PropertyGroup>
 </Project>

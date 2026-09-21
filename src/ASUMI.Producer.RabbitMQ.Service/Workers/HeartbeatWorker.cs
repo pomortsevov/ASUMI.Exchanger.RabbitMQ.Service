@@ -1,4 +1,5 @@
-﻿using ASUMI.Producer.RabbitMQ.Service.Configuration;
+﻿using ASUMI.Producer.RabbitMQ.Service.Abstractions;
+using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -7,58 +8,50 @@ namespace ASUMI.Producer.RabbitMQ.Service.Workers;
 
 public sealed class HeartbeatWorker : BackgroundService
 {
-    private static readonly Action<ILogger, int, DateTime, Exception?> LogHeartbeat =
-        LoggerMessage.Define<int, DateTime>(
-            LogLevel.Information,
-            new EventId(1, nameof(LogHeartbeat)),
-            "Hello World #{Count} at {Time:HH:mm:ss}");
-
-    private static readonly Action<ILogger, int, Exception?> LogStarted =
-        LoggerMessage.Define<int>(
-            LogLevel.Information,
-            new EventId(2, nameof(LogStarted)),
-            "HeartbeatWorker started. Interval: {Interval}s");
-
-    private static readonly Action<ILogger, Exception?> LogDisabled =
-        LoggerMessage.Define(
-            LogLevel.Warning,
-            new EventId(3, nameof(LogDisabled)),
-            "HeartbeatWorker is disabled by configuration. Exiting.");
-
-    private static readonly Action<ILogger, int, Exception?> LogStopped =
-        LoggerMessage.Define<int>(
-            LogLevel.Information,
-            new EventId(4, nameof(LogStopped)),
-            "HeartbeatWorker stopped. Total ticks: {Count}");
-
     private readonly ILogger<HeartbeatWorker> _logger;
     private readonly AsumiProducerRabbitMqOptions _options;
+    private readonly IRabbitMqConnectionProvider _rabbit;
 
     public HeartbeatWorker(
         ILogger<HeartbeatWorker> logger,
-        IOptions<AsumiProducerRabbitMqOptions> options)
+        IOptions<AsumiProducerRabbitMqOptions> options,
+        IRabbitMqConnectionProvider rabbit)
     {
         _logger = logger;
         _options = options.Value;
+        _rabbit = rabbit;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!_options.Enabled)
         {
-            LogDisabled(_logger, null);
+            _logger.LogWarning("HeartbeatWorker is disabled by configuration. Exiting.");
+            return;
+        }
+
+        try
+        {
+            using var channel = _rabbit.CreateChannel();
+            _logger.LogInformation(
+                "RabbitMQ channel opened successfully. ChannelNumber={ChannelNumber}",
+                channel.ChannelNumber);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to open RabbitMQ channel. Worker will exit.");
             return;
         }
 
         var interval = TimeSpan.FromSeconds(_options.IntervalSeconds);
-        LogStarted(_logger, _options.IntervalSeconds, null);
+        _logger.LogInformation("HeartbeatWorker started. Interval: {Interval}s", _options.IntervalSeconds);
 
         var count = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             count++;
-            LogHeartbeat(_logger, count, DateTime.Now, null);
+            _logger.LogInformation("Hello World #{Count} at {Time:HH:mm:ss}", count, DateTime.Now);
 
             try
             {
@@ -70,6 +63,6 @@ public sealed class HeartbeatWorker : BackgroundService
             }
         }
 
-        LogStopped(_logger, count, null);
+        _logger.LogInformation("HeartbeatWorker stopped. Total ticks: {Count}", count);
     }
 }
