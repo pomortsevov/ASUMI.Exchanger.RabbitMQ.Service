@@ -48,27 +48,21 @@ public class Program
                 })
                 .ConfigureServices((ctx, services) =>
                 {
-                    // Опции основного воркера
-                    services.AddOptions<AsumiProducerRabbitMqOptions>()
-                        .Bind(ctx.Configuration.GetSection(AsumiProducerRabbitMqOptions.SectionName))
-                        .ValidateDataAnnotations()
-                        .ValidateOnStart();
-
-                    // Опции подключения к RabbitMQ
                     services.AddOptions<RabbitMqOptions>()
                         .Bind(ctx.Configuration.GetSection(RabbitMqOptions.SectionName))
                         .ValidateDataAnnotations()
                         .ValidateOnStart();
 
-                    // Провайдер соединения — singleton
+                    services.AddOptions<FilePublisherOptions>()
+                        .Bind(ctx.Configuration.GetSection(FilePublisherOptions.SectionName))
+                        .ValidateDataAnnotations()
+                        .ValidateOnStart();
+
                     services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
-
-                    // Топология RabbitMQ: exchange, queue, bind
                     services.AddSingleton<IRabbitMqTopologyInitializer, RabbitMqTopologyInitializer>();
-                    services.AddHostedService<RabbitMqTopologyHostedService>();
 
-                    // Воркеры
-                    services.AddHostedService<HeartbeatWorker>();
+                    services.AddHostedService<RabbitMqTopologyHostedService>();
+                    services.AddHostedService<FilePublisherWorker>();
                 })
                 .Build();
 

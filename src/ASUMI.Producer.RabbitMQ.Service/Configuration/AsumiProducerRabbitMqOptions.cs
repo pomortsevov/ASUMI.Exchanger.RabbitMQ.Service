@@ -2,12 +2,26 @@
 
 namespace ASUMI.Producer.RabbitMQ.Service.Configuration;
 
-public sealed class AsumiProducerRabbitMqOptions
+public sealed class FilePublisherOptions
 {
-    public const string SectionName = "AsumiProducerRabbitMq";
+    public const string SectionName = "FilePublisher";
 
-    [Range(1, 3600)]
-    public int IntervalSeconds { get; set; } = 5;
-
+    /// <summary>Включён ли воркер. Удобно для быстрого отключения без пересборки.</summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>Папка, откуда читаются *.json-файлы.</summary>
+    [Required]
+    public string SourcePath { get; set; } = "C:\\SourceJson";
+
+    /// <summary>Папка, куда копируются успешно обработанные файлы.</summary>
+    [Required]
+    public string ProcessedPath { get; set; } = "C:\\ProcessedJson";
+
+    /// <summary>Маска файлов для обработки.</summary>
+    [Required]
+    public string FileMask { get; set; } = "*.json";
+
+    /// <summary>Как часто проверять папку, секунды.</summary>
+    [Range(1, 3600)]
+    public int PollIntervalSeconds { get; set; } = 10;
 }
