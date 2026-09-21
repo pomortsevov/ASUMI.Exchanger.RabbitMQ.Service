@@ -10,7 +10,9 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
 {
     private readonly ILogger<RabbitMqConnectionProvider> _logger;
     private readonly RabbitMqOptions _options;
-    private readonly IConnection _connection;
+
+    private readonly SemaphoreSlim _connectionLock = new(1, 1);
+    private IConnection? _connection;
     private bool _disposed;
 
     public RabbitMqConnectionProvider(
@@ -19,41 +21,100 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
     {
         _logger = logger;
         _options = options.Value;
+    }
 
-        var factory = new ConnectionFactory
-        {
-            HostName = _options.HostName,
-            Port = _options.Port,
-            VirtualHost = _options.VirtualHost,
-            UserName = _options.UserName,
-            Password = _options.Password,
-            AutomaticRecoveryEnabled = _options.AutomaticRecovery,
-            NetworkRecoveryInterval = TimeSpan.FromSeconds(_options.NetworkRecoveryIntervalSeconds),
-            DispatchConsumersAsync = false
-        };
+    public bool IsConnected => _connection is { IsOpen: true };
 
-        _logger.LogInformation(
-            "Connecting to RabbitMQ at {Host}:{Port}{VHost} as {User}",
-            _options.HostName, _options.Port, _options.VirtualHost, _options.UserName);
+    public IModel? TryCreateChannel()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var connection = _connection;
+        if (connection is null || !connection.IsOpen)
+            return null;
 
         try
         {
-            _connection = factory.CreateConnection(_options.ConnectionName);
-            _logger.LogInformation("Connected to RabbitMQ. ConnectionName={ConnectionName}", _options.ConnectionName);
+            return connection.CreateModel();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex,
-                "Failed to connect to RabbitMQ at {Host}:{Port}{VHost}",
-                _options.HostName, _options.Port, _options.VirtualHost);
-            throw;
+            _logger.LogWarning(ex, "Failed to create channel. Connection may be lost.");
+            return null;
         }
     }
 
-    public IModel CreateChannel()
+    public async Task<IModel> WaitForChannelAsync(CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        return _connection.CreateModel();
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var channel = TryCreateChannel();
+            if (channel is not null)
+                return channel;
+
+            await EnsureConnectedAsync(cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+        }
+
+        throw new OperationCanceledException(cancellationToken);
+    }
+
+    /// <summary>
+    /// Пытается установить соединение. Если уже подключены — ничего не делает.
+    /// Не бросает исключение наружу: логирует и оставляет соединение null.
+    /// </summary>
+    public async Task EnsureConnectedAsync(CancellationToken cancellationToken)
+    {
+        if (_disposed || IsConnected) return;
+
+        await _connectionLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (IsConnected) return;
+
+            var factory = new ConnectionFactory
+            {
+                HostName = _options.HostName,
+                Port = _options.Port,
+                VirtualHost = _options.VirtualHost,
+                UserName = _options.UserName,
+                Password = _options.Password,
+                AutomaticRecoveryEnabled = _options.AutomaticRecovery,
+                NetworkRecoveryInterval = TimeSpan.FromSeconds(_options.NetworkRecoveryIntervalSeconds),
+                DispatchConsumersAsync = false
+            };
+
+            try
+            {
+                _logger.LogInformation(
+                    "Attempting to connect to RabbitMQ at {Host}:{Port}{VHost} as {User}...",
+                    _options.HostName, _options.Port, _options.VirtualHost, _options.UserName);
+
+                var connection = factory.CreateConnection(_options.ConnectionName);
+
+                connection.ConnectionShutdown += (_, ea) =>
+                    _logger.LogWarning("RabbitMQ connection shutdown: {Reason}", ea.ReplyText);
+                connection.CallbackException += (_, ea) =>
+                    _logger.LogError(ea.Exception, "RabbitMQ callback exception.");
+                connection.ConnectionBlocked += (_, ea) =>
+                    _logger.LogWarning("RabbitMQ connection blocked: {Reason}", ea.Reason);
+
+                _connection = connection;
+                _logger.LogInformation("Connected to RabbitMQ. ConnectionName={ConnectionName}", _options.ConnectionName);
+            }
+catch (Exception ex)
+{
+    // Пишем только тип и сообщение без стектрейса — иначе лог засоряется при недоступном RabbitMQ.
+    _logger.LogWarning(
+        "Could not connect to RabbitMQ at {Host}:{Port}{VHost} ({ExceptionType}): {Message}. Will retry.",
+        _options.HostName, _options.Port, _options.VirtualHost,
+        ex.GetType().Name, ex.Message);
+}
+        }
+        finally
+        {
+            _connectionLock.Release();
+        }
     }
 
     public void Dispose()
@@ -63,16 +124,16 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
 
         try
         {
-            if (_connection.IsOpen)
-            {
+            if (_connection is { IsOpen: true })
                 _connection.Close(TimeSpan.FromSeconds(5));
-            }
-            _connection.Dispose();
+            _connection?.Dispose();
             _logger.LogInformation("RabbitMQ connection closed.");
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Error while closing RabbitMQ connection.");
         }
+
+        _connectionLock.Dispose();
     }
 }

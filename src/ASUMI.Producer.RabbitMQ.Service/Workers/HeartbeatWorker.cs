@@ -3,6 +3,7 @@ using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RabbitMQ.Client;
 
 namespace ASUMI.Producer.RabbitMQ.Service.Workers;
 
@@ -30,21 +31,26 @@ public sealed class HeartbeatWorker : BackgroundService
             return;
         }
 
+        _logger.LogInformation("HeartbeatWorker starting. Waiting for RabbitMQ connection...");
+
+        IModel channel;
         try
         {
-            using var channel = _rabbit.CreateChannel();
-            _logger.LogInformation(
-                "RabbitMQ channel opened successfully. ChannelNumber={ChannelNumber}",
-                channel.ChannelNumber);
+            channel = await _rabbit.WaitForChannelAsync(stoppingToken);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException)
         {
-            _logger.LogError(ex, "Failed to open RabbitMQ channel. Worker will exit.");
+            _logger.LogInformation("HeartbeatWorker cancelled while waiting for RabbitMQ.");
             return;
         }
 
+        using (channel)
+        {
+            _logger.LogInformation("RabbitMQ channel opened. ChannelNumber={ChannelNumber}", channel.ChannelNumber);
+        }
+
         var interval = TimeSpan.FromSeconds(_options.IntervalSeconds);
-        _logger.LogInformation("HeartbeatWorker started. Interval: {Interval}s", _options.IntervalSeconds);
+        _logger.LogInformation("HeartbeatWorker running. Interval: {Interval}s", _options.IntervalSeconds);
 
         var count = 0;
 

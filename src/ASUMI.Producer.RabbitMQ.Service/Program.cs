@@ -48,18 +48,22 @@ public class Program
                 })
                 .ConfigureServices((ctx, services) =>
                 {
+                    // Опции основного воркера
                     services.AddOptions<AsumiProducerRabbitMqOptions>()
                         .Bind(ctx.Configuration.GetSection(AsumiProducerRabbitMqOptions.SectionName))
                         .ValidateDataAnnotations()
                         .ValidateOnStart();
 
+                    // Опции подключения к RabbitMQ
                     services.AddOptions<RabbitMqOptions>()
                         .Bind(ctx.Configuration.GetSection(RabbitMqOptions.SectionName))
                         .ValidateDataAnnotations()
                         .ValidateOnStart();
 
+                    // Провайдер соединения — singleton
                     services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
 
+                    // Воркеры
                     services.AddHostedService<HeartbeatWorker>();
                 })
                 .Build();
