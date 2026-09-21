@@ -1,0 +1,25 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <Company>ASUMI</Company>
+    <Product>ASUMI.Producer.RabbitMQ.Service</Product>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <!--
+    Предупреждения компилятора считаем ошибками, но делаем исключения
+    для тех категорий, которые не должны ронять сборку всего решения:
+      NU1901-NU1904 — уязвимости в транзитивных пакетах (security advisories)
+      NU1605        — downgrade пакета (конфликт версий Microsoft.Extensions.*)
+      CS8034        — не удалось загрузить анализатор (обычно временный сбой VS)
+      CAxxxx        — анализаторы кода (если решите отключить часть из них)
+  -->
+  <PropertyGroup>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904;NU1605;CS8034</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>
