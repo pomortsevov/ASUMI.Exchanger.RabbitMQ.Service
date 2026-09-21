@@ -4,7 +4,6 @@ using ASUMI.Producer.RabbitMQ.Service.Workers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
-using Serilog.Events;
 using Serilog.Settings.Configuration;
 using System.Globalization;
 
@@ -15,12 +14,13 @@ public class Program
     public static int Main(string[] args)
     {
         var invariant = CultureInfo.InvariantCulture;
+        var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "asumi-producer-rabbitmq-.log");
 
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Information()
             .WriteTo.Console(formatProvider: invariant)
             .WriteTo.File(
-                path: "logs/asumi-producer-rabbitmq-.log",
+                path: logPath,
                 formatProvider: invariant,
                 rollingInterval: RollingInterval.Day)
             .CreateBootstrapLogger();
@@ -38,7 +38,7 @@ public class Program
                        .Enrich.WithProperty("Service", ServiceConstants.ServiceName)
                        .WriteTo.Console(formatProvider: invariant)
                        .WriteTo.File(
-                           path: "logs/asumi-producer-rabbitmq-.log",
+                           path: logPath,
                            formatProvider: invariant,
                            rollingInterval: RollingInterval.Day,
                            retainedFileCountLimit: 14,
