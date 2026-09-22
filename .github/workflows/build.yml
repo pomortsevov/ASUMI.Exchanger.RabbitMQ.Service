@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]       
   pull_request:
     branches: [ main ]
 
@@ -45,3 +46,11 @@ jobs:
           name: ASUMI.Producer.RabbitMQ.Service-${{ steps.nbgv.outputs.SimpleVersion }}
           path: publish/
           retention-days: 30
+
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: publish/**/*.exe
+          generate_release_notes: true
