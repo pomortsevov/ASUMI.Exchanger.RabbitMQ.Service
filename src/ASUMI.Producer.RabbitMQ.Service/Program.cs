@@ -8,6 +8,7 @@ using Microsoft.Extensions.Hosting;
 using Serilog;
 using Serilog.Settings.Configuration;
 using System.Globalization;
+using System.Reflection;
 
 namespace ASUMI.Producer.RabbitMQ.Service;
 
@@ -29,7 +30,12 @@ public class Program
 
         try
         {
-            Log.Information("Starting {ServiceName}...", ServiceConstants.ServiceName);
+            var version = typeof(Program).Assembly
+                .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion
+                ?? "unknown";
+
+            Log.Information("Starting {ServiceName} v{Version}...", ServiceConstants.ServiceName, version);
 
             var host = Host.CreateDefaultBuilder(args)
                 .UseWindowsService(o => o.ServiceName = ServiceConstants.ServiceName)
