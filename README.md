@@ -1,13 +1,10 @@
 # ASUMI.Producer.RabbitMQ.Service
 
-Windows-служба на .NET 8 (Worker Service) для публикации сообщений из ASUMI в RabbitMQ.
+Windows-служба на .NET 8 для публикации JSON-файлов с договорами из СЭД **АСУМИ** в RabbitMQ.
 
-Работает в двух режимах:
+АСУМИ генерирует JSON-файлы с договорами и согласованиями и складывает их в папку. Служба читает эти файлы, публикует содержимое в RabbitMQ и перемещает обработанные файлы в папку «processed». Consumer, который будет забирать сообщения из очереди, появится отдельно и позже.
 
-- **Консоль** — для локальной отладки (`dotnet run`).
-- **Служба Windows** — для продакшена (SCM, автозапуск).
-
-Служба **устойчива к недоступному RabbitMQ**: при старте ждёт подключения, не падает, при разрыве соединения автоматически переподключается.
+Служба **устойчива к недоступному RabbitMQ**: при старте ждёт подключения, не падает, при разрыве соединения автоматически переподключается. Файл **не удаляется и не перемещается**, пока публикация не пройдёт успешно.
 
 ## Стек
 
@@ -18,6 +15,33 @@ Windows-служба на .NET 8 (Worker Service) для публикации с
 - `RabbitMQ.Client` 6.8.1
 - Serilog (консоль + файл с ротацией по дням)
 
+## Как работает
+
+```
+┌──────────┐    *.json     ┌─────────────────────┐    BasicPublish    ┌────────────┐
+│  АСУМИ   │ ────────────► │ ASUMI.Producer.     │ ─────────────────► │  RabbitMQ  │
+│          │  SourcePath   │ RabbitMQ.Service    │  asumi.exchange    │            │
+└──────────┘               └─────────┬───────────┘  routingKey:        └─────┬──────┘
+                                     │              asumi.json                │
+                                     ▼                                        ▼
+                          ┌─────────────────────┐                     ┌────────────┐
+                          │   ProcessedPath     │                     │ asumi.queue│
+                          │   (успех)           │                     │  (TTL 30s) │
+                          └─────────────────────┘                     └─────┬──────┘
+                                                                            │
+                                                                            ▼
+                                                                     ┌────────────┐
+                                                                     │  Consumer  │
+                                                                     │  (позже)   │
+                                                                     └────────────┘
+```
+
+1. АСУМИ кладёт `*.json` в `SourcePath`.
+2. Служба раз в `PollIntervalSeconds` сканирует папку.
+3. Для каждого файла: читает → публикует в `asumi.exchange` с routing key `asumi.json` → копирует в `ProcessedPath` → удаляет исходник.
+4. **Если RabbitMQ недоступен** — файл остаётся в `SourcePath`, попытка повторяется на следующем цикле. Ничего не теряется.
+5. Сообщения лежат в `asumi.queue` до 30 секунд (TTL) или до тех пор, пока их не заберёт consumer.
+
 ## Структура репозитория
 
 ```
@@ -26,31 +50,30 @@ ASUMI.Producer.RabbitMQ.Service/
 ├── Directory.Build.props
 ├── .gitignore
 ├── README.md
-├── src/
-│   └── ASUMI.Producer.RabbitMQ.Service/
-│       ├── ASUMI.Producer.RabbitMQ.Service.csproj
-│       ├── Program.cs
-│       ├── appsettings.json
-│       ├── appsettings.Development.json
-│       ├── Properties/
-│       │   └── launchSettings.json
-│       ├── Abstractions/
-│       │   ├── IMessageSource.cs
-│       │   ├── IRabbitMqConnectionProvider.cs
-│       │   └── IRabbitMqTopologyInitializer.cs
-│       ├── Configuration/
-│       │   ├── AsumiProducerRabbitMqOptions.cs
-│       │   └── RabbitMqOptions.cs
-│       ├── Hosting/
-│       │   └── ServiceConstants.cs
-│       ├── Infrastructure/
-│       │   ├── RabbitMqConnectionProvider.cs
-│       │   ├── RabbitMqTopologyInitializer.cs
-│       │   └── RabbitMqTopologyHostedService.cs
-│       └── Workers/
-│           └── HeartbeatWorker.cs
-└── tests/
-    └── ASUMI.Producer.RabbitMQ.Service.Tests/
+└── src/
+    └── ASUMI.Producer.RabbitMQ.Service/
+        ├── ASUMI.Producer.RabbitMQ.Service.csproj
+        ├── Program.cs
+        ├── appsettings.json
+        ├── appsettings.Development.json
+        ├── Properties/
+        │   └── launchSettings.json
+        ├── Abstractions/
+        │   ├── IMessagePublisher.cs
+        │   ├── IRabbitMqConnectionProvider.cs
+        │   └── IRabbitMqTopologyInitializer.cs
+        ├── Configuration/
+        │   ├── FilePublisherOptions.cs
+        │   └── RabbitMqOptions.cs
+        ├── Hosting/
+        │   └── ServiceConstants.cs
+        ├── Infrastructure/
+        │   ├── RabbitMqConnectionProvider.cs
+        │   ├── RabbitMqMessagePublisher.cs
+        │   ├── RabbitMqTopologyHostedService.cs
+        │   └── RabbitMqTopologyInitializer.cs
+        └── Workers/
+            └── FilePublisherWorker.cs
 ```
 
 ## Требования
@@ -58,7 +81,7 @@ ASUMI.Producer.RabbitMQ.Service/
 - **Для сборки**: .NET SDK 8.0.101 или новее.
 - **Для запуска**: .NET Runtime 8.0.x (`Microsoft.NETCore.App 8.0.x`).
 - **Для установки службы**: PowerShell от имени администратора.
-- **RabbitMQ**: доступный брокер, например через Docker (см. ниже).
+- **RabbitMQ**: доступный брокер (см. раздел «Запуск RabbitMQ локально»).
 
 Проверить SDK и Runtime:
 
@@ -69,7 +92,7 @@ dotnet --list-runtimes
 
 ## Запуск RabbitMQ локально (Docker)
 
-Пример `docker-compose.yml`:
+`docker-compose.yml`:
 
 ```yaml
 version: "2.1"
@@ -120,39 +143,46 @@ $env:DOTNET_ENVIRONMENT = "Development"
 dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 ```
 
+> **Что меняется в Development.** В `appsettings.Development.json` переопределяются только параметры подключения к RabbitMQ (`HostName`, `UserName`, `Password`) — это позволяет разработчику подключаться к локальному брокеру. Все остальные настройки (`FilePublisher.SourcePath`, `ProcessedPath`, `MessageTtlMs` и т.д.) берутся из `appsettings.json`. То есть `dotnet run` в Development работает с теми же папками `C:\SourceJson` и `C:\ProcessedJson`, что и продакшен-служба.
+
 Остановить — `Ctrl+C`.
 
 Ожидаемый вывод при работающем RabbitMQ:
 
 ```
-[15:00:00 INF] Starting ASUMI Producer RabbitMQ Service...
-[15:00:00 INF] Declaring RabbitMQ topology...
-[15:00:00 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
-[15:00:00 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Producer.RabbitMQ.Service
-[15:00:00 INF] Exchange declared: asumi.exchange (topic, durable)
-[15:00:00 INF] Queue declared: asumi.queue (durable, TTL=30000ms)
-[15:00:00 INF] Queue bound: asumi.queue -> asumi.exchange (routingKey=asumi.json)
-[15:00:00 INF] RabbitMQ topology is ready.
-[15:00:05 INF] HeartbeatWorker starting. Waiting for RabbitMQ connection...
-[15:00:05 INF] RabbitMQ channel opened. ChannelNumber=1
-[15:00:05 INF] HeartbeatWorker running. Interval: 2s
-[15:00:05 INF] Hello World #1 at 15:00:05
-...
+[15:52:00 INF] Starting ASUMI Producer RabbitMQ Service...
+[15:52:00 INF] Declaring RabbitMQ topology...
+[15:52:00 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
+[15:52:00 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Producer.RabbitMQ.Service
+[15:52:05 INF] Exchange declared: asumi.exchange (topic, durable)
+[15:52:05 INF] Queue declared: asumi.queue (durable, TTL=30000ms)
+[15:52:05 INF] Queue bound: asumi.queue -> asumi.exchange (routingKey=asumi.json)
+[15:52:05 INF] RabbitMQ topology is ready.
+[15:52:05 INF] FilePublisherWorker starting. Source=C:\SourceJson, Processed=C:\ProcessedJson, Mask=*.json, Interval=10s
+[15:52:15 INF] Read Z_25.01.22_13-42__d.ID-12_b.ID-.json (1165 chars, 1475 bytes UTF-8).
+[15:52:15 INF] Published Z_25.01.22_13-42__d.ID-12_b.ID-.json (1475 bytes) to exchange asumi.exchange with routingKey asumi.json.
+[15:52:15 INF] Copied to processed: Z_25.01.22_13-42__d.ID-12_b.ID--20260921-155215341.json
 ```
 
 Ожидаемый вывод при **недоступном** RabbitMQ (служба не падает):
 
 ```
-[15:01:00 INF] Starting ASUMI Producer RabbitMQ Service...
-[15:01:00 INF] Declaring RabbitMQ topology...
-[15:01:00 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
-[15:01:00 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
-[15:01:05 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
-[15:01:05 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
+[15:54:00 INF] Starting ASUMI Producer RabbitMQ Service...
+[15:54:00 INF] Declaring RabbitMQ topology...
+[15:54:00 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
+[15:54:04 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
+[15:54:09 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
+[15:54:13 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
 ...
 ```
 
-Как только RabbitMQ поднимется — служба автоматически подключится и продолжит работу.
+Как только RabbitMQ поднимется — служба автоматически подключится и продолжит работу:
+
+```
+[15:55:24 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Producer.RabbitMQ.Service
+[15:55:29 INF] Published Z_25.01.22_13-42__d.ID-6_b.ID-.json (1330 bytes) to exchange asumi.exchange with routingKey asumi.json.
+[15:55:29 INF] Copied to processed: Z_25.01.22_13-42__d.ID-6_b.ID--20260921-155529934.json
+```
 
 ## Публикация
 
@@ -185,7 +215,7 @@ sc.exe create "ASUMI Producer RabbitMQ Service" binPath= "C:\Services\ASUMI.Prod
 ### 2. Описание (опционально)
 
 ```powershell
-sc.exe description "ASUMI Producer RabbitMQ Service" "Publishes messages from ASUMI source to RabbitMQ."
+sc.exe description "ASUMI Producer RabbitMQ Service" "Publishes ASUMI contract JSON files to RabbitMQ."
 ```
 
 ### 3. Запустить
@@ -226,16 +256,12 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 
 - `appsettings.json` — общие настройки.
 - `appsettings.{DOTNET_ENVIRONMENT}.json` — переопределения для среды (`Development`, `Production`).
-- Переменные окружения с префиксом `DOTNET_` и секциями через `__`.
+- Переменные окружения с секциями через `__`.
 
 ### Полный список секций
 
 ```json
 {
-  "AsumiProducerRabbitMq": {
-    "Enabled": true,
-    "IntervalSeconds": 5
-  },
   "RabbitMQ": {
     "HostName": "localhost",
     "Port": 5672,
@@ -252,6 +278,13 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
     "ReconnectIntervalSeconds": 5,
     "ConnectionName": "ASUMI.Producer.RabbitMQ.Service"
   },
+  "FilePublisher": {
+    "Enabled": true,
+    "SourcePath": "C:\\SourceJson",
+    "ProcessedPath": "C:\\ProcessedJson",
+    "FileMask": "*.json",
+    "PollIntervalSeconds": 10
+  },
   "Serilog": {
     "MinimumLevel": {
       "Default": "Information",
@@ -266,7 +299,7 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 
 ### Описание ключей `RabbitMQ`
 
-| Ключ | Назначение | Значение по умолчанию |
+| Ключ | Назначение | По умолчанию |
 |---|---|---|
 | `HostName` | Хост RabbitMQ | `localhost` |
 | `Port` | Порт AMQP | `5672` |
@@ -283,10 +316,21 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 | `ReconnectIntervalSeconds` | Интервал попыток при первом подключении | `5` |
 | `ConnectionName` | Имя соединения в UI RabbitMQ | `ASUMI.Producer.RabbitMQ.Service` |
 
+### Описание ключей `FilePublisher`
+
+| Ключ | Назначение | По умолчанию |
+|---|---|---|
+| `Enabled` | Включён ли воркер | `true` |
+| `SourcePath` | Папка, откуда читаются `*.json` | `C:\SourceJson` |
+| `ProcessedPath` | Папка для успешно опубликованных файлов | `C:\ProcessedJson` |
+| `FileMask` | Маска файлов | `*.json` |
+| `PollIntervalSeconds` | Интервал сканирования папки | `10` |
+
 ### Переопределение через переменные окружения
 
 ```powershell
 [Environment]::SetEnvironmentVariable("RabbitMQ__Password", "StrongP@ss", "Machine")
+[Environment]::SetEnvironmentVariable("FilePublisher__PollIntervalSeconds", "30", "Machine")
 ```
 
 > `__` (двойное подчёркивание) — разделитель вложенности. `RabbitMQ__Password` = `RabbitMQ.Password` в JSON.
@@ -346,23 +390,15 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 Get-EventLog -LogName Application -Source "ASUMI Producer RabbitMQ Service" -Newest 10 -ErrorAction SilentlyContinue | Format-List TimeGenerated, EntryType, Message
 ```
 
-### Служба запускается и сразу падает
-
-Обычно — исключение в `Program.Main` или при построении хоста. Смотрите Event Log (см. выше). Возможные причины:
-
-- Ошибка в `appsettings.json` — не проходит валидация.
-- Опечатка в имени обязательной опции `RabbitMQ:*`.
-- Пакет не установлен (`dotnet restore`).
-
 ### RabbitMQ недоступен
 
 Это **нормальный сценарий** — служба не падает, а ждёт подключения. В логе раз в 5 секунд:
 
 ```
-[15:01:00 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
+[15:54:04 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
 ```
 
-Как только RabbitMQ поднимется — в логе появится `Connected to RabbitMQ`, и служба продолжит работу.
+Как только RabbitMQ поднимется — в логе появится `Connected to RabbitMQ`, и служба продолжит работу. Файлы в `SourcePath` **не теряются** — они будут опубликованы после восстановления соединения.
 
 Проверить доступность RabbitMQ:
 
@@ -380,12 +416,19 @@ docker logs rabbitmq --tail 30
 - **Queues** → `asumi.queue` существует, привязана к `asumi.exchange` с routing key `asumi.json`.
 - **Queues** → `asumi.queue` → **Message rates** — есть ли публикации.
 
+### Сообщения исчезают из очереди через 30 секунд
+
+Это **нормально** — у очереди `asumi.queue` установлен `x-message-ttl = 30000` (`MessageTtlMs`). Если consumer не заберёт сообщение за 30 секунд, оно удаляется. Когда появится consumer, TTL можно увеличить или отключить (`MessageTtlMs: 0`).
+
+> **Важно:** TTL очереди нельзя изменить после создания. Чтобы поменять — удалите очередь в UI RabbitMQ, потом перезапустите службу.
+
 ### Ошибка `PRECONDITION_FAILED` при `QueueDeclare`
 
 Очередь уже существует с другими параметрами (например, без TTL). Удалите её в UI (`Delete`), затем перезапустите службу:
 
 ```powershell
-sc.exe restart "ASUMI Producer RabbitMQ Service"
+sc.exe stop "ASUMI Producer RabbitMQ Service"
+sc.exe start "ASUMI Producer RabbitMQ Service"
 ```
 
 ### Логи не появляются
@@ -396,20 +439,12 @@ sc.exe restart "ASUMI Producer RabbitMQ Service"
 ls C:\Services\ASUMI.Producer.RabbitMQ.Service\logs
 ```
 
-Если нет — убедитесь, что в `Program.cs` используется `AppContext.BaseDirectory`, а не `"logs/..."`.
-
 ## Разработка
 
 ### Сборка
 
 ```powershell
 dotnet build
-```
-
-### Тесты
-
-```powershell
-dotnet test
 ```
 
 ### Очистка артефактов
@@ -422,61 +457,37 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 
 ### Структура кода
 
-- **`Abstractions/`** — интерфейсы (`IRabbitMqConnectionProvider`, `IRabbitMqTopologyInitializer`, `IMessageSource`). Здесь только контракты, без реализации.
-- **`Configuration/`** — типизированные опции (`AsumiProducerRabbitMqOptions`, `RabbitMqOptions`) с валидацией через DataAnnotations.
+- **`Abstractions/`** — интерфейсы: `IMessagePublisher`, `IRabbitMqConnectionProvider`, `IRabbitMqTopologyInitializer`. Только контракты, без реализации.
+- **`Configuration/`** — типизированные опции (`RabbitMqOptions`, `FilePublisherOptions`) с валидацией через DataAnnotations.
 - **`Hosting/`** — константы хоста (`ServiceConstants`).
-- **`Infrastructure/`** — реализации: подключение, топология, hosted-service-обёртки.
+- **`Infrastructure/`** — реализации: подключение, публикация, объявление топологии.
 - **`Workers/`** — `BackgroundService`-ы.
 
 ### Как добавить новый воркер
 
 1. Создать класс в `Workers/`, унаследовать от `BackgroundService`.
-2. В конструкторе запросить нужные зависимости (`IRabbitMqConnectionProvider`, `IOptions<T>`).
+2. В конструкторе запросить зависимости (`IOptions<T>`, `IMessagePublisher`).
 3. Реализовать `ExecuteAsync(CancellationToken)`, уважать `stoppingToken`.
 4. Зарегистрировать в `Program.cs`: `services.AddHostedService<NewWorker>();`.
 
 ### Как добавить новый источник сообщений
 
-1. Реализовать `IMessageSource` в `Infrastructure/`.
-2. Зарегистрировать в DI: `services.AddSingleton<IMessageSource, FileSystemMessageSource>();`.
-3. Использовать в `PublishWorker`.
+1. Создать интерфейс в `Abstractions/`.
+2. Реализовать в `Infrastructure/`.
+3. Зарегистрировать в DI: `services.AddSingleton<IMessageSource, FileSystemMessageSource>();`.
+4. Использовать в воркере.
 
-## CI/CD
+## Roadmap
 
-Заготовка для GitHub Actions (`.github/workflows/build.yml`):
-
-```yaml
-name: build
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - run: dotnet restore
-      - run: dotnet build --no-restore -c Release
-      - run: dotnet test --no-build -c Release
-      - run: dotnet publish src\ASUMI.Producer.RabbitMQ.Service -c Release -o out
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ASUMI.Producer.RabbitMQ.Service
-          path: out/
-```
-
-Для GitLab CI синтаксис аналогичен, структура шагов та же.
+- [ ] **Consumer** — отдельный сервис, который забирает сообщения из `asumi.queue` и обрабатывает их.
+- [ ] **Валидация JSON** перед публикацией — битые файлы в отдельную папку `Failed`.
+- [ ] **Обработка повторных сбоев** — счётчик попыток по файлу, перенос «безнадёжных» в `Failed`.
+- [ ] **Версионность** — автоматический номер версии из Git (`Nerdbank.GitVersioning`).
+- [ ] **CI/CD** — сборка, тесты, публикация артефакта.
+- [ ] **Юнит-тесты** — `FilePublisherWorker`, `RabbitMqMessagePublisher`, options-валидация.
+- [ ] **Метрики** — счётчики опубликованных/проваленных файлов.
+- [ ] **Health-check** — endpoint или Windows Performance Counter.
 
 ## Лицензия и авторство
 
-Внутренний проект ASUMI.
+Внутренний проект СЭД **АСУМИ**. Все права принадлежат организации.
