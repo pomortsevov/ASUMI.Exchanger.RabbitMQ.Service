@@ -14,13 +14,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.101'
+          global-json-file: global.json
 
       - name: Restore dependencies
         run: dotnet restore
 
       - name: Build
         run: dotnet build --no-restore --configuration Release
+
+      - name: Publish
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: dotnet publish src\ASUMI.Producer.RabbitMQ.Service --no-build --configuration Release --output publish
+
+      - name: Upload artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASUMI.Producer.RabbitMQ.Service
+          path: publish/
+          retention-days: 30

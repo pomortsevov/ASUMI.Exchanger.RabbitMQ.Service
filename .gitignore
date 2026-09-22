@@ -488,3 +488,5 @@ logs/
 appsettings.Production.json
 appsettings.Local.json
 *.log
+
+publish/
