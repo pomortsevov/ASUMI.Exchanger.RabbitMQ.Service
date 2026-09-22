@@ -1,5 +1,8 @@
 # ASUMI.Producer.RabbitMQ.Service
 
+[![build](https://github.com/pomortsevov/ASUMI.Producer.RabbitMQ.Service/actions/workflows/build.yml/badge.svg)](https://github.com/pomortsevov/ASUMI.Producer.RabbitMQ.Service/actions/workflows/build.yml)
+
+
 Windows-служба на .NET 8 для публикации JSON-файлов с договорами из СЭД **АСУМИ** в RabbitMQ.
 
 АСУМИ генерирует JSON-файлы с договорами и согласованиями и складывает их в папку. Служба читает эти файлы, публикует содержимое в RabbitMQ и перемещает обработанные файлы в папку «processed». Consumer, который будет забирать сообщения из очереди, появится отдельно и позже.
@@ -32,7 +35,7 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
                                                                             ▼
                                                                      ┌────────────┐
                                                                      │  Consumer  │
-                                                                     │  (позже)   │
+                                                                     │  МИТ   │
                                                                      └────────────┘
 ```
 
