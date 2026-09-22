@@ -9,6 +9,8 @@ using Serilog;
 using Serilog.Settings.Configuration;
 using System.Globalization;
 
+this is not valid C#
+
 namespace ASUMI.Producer.RabbitMQ.Service;
 
 public class Program
