@@ -24,7 +24,7 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
 ┌──────────┐    *.json     ┌─────────────────────┐    BasicPublish    ┌────────────┐
 │  АСУМИ   │ ────────────► │ ASUMI.Producer.     │ ─────────────────► │  RabbitMQ  │
 │          │  SourcePath   │ RabbitMQ.Service    │  asumi.exchange    │            │
-└──────────┘               └─────────┬───────────┘  routingKey:        └─────┬──────┘
+└──────────┘               └─────────┬───────────┘  routingKey:       └─────┬──────┘
                                      │              asumi.json                │
                                      ▼                                        ▼
                           ┌─────────────────────┐                     ┌────────────┐
@@ -35,7 +35,7 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
                                                                             ▼
                                                                      ┌────────────┐
                                                                      │  Consumer  │
-                                                                     │  МИТ   │
+                                                                     │  МИТ       │
                                                                      └────────────┘
 ```
 
@@ -490,6 +490,167 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 - [ ] **Юнит-тесты** — `FilePublisherWorker`, `RabbitMqMessagePublisher`, options-валидация.
 - [ ] **Метрики** — счётчики опубликованных/проваленных файлов.
 - [ ] **Health-check** — endpoint или Windows Performance Counter.
+
+## Развёртывание на сервере
+
+Для развёртывания на Windows Server есть скрипт `deploy/deploy.ps1`, который выполняет все шаги автоматически: проверку .NET 8 Runtime, установку при необходимости, копирование артефакта, создание службы, настройку recovery, запуск и проверку логов.
+
+### Предварительные требования
+
+**На сервере:**
+
+- Windows Server 2019 или новее.
+- WinRM включён (для удалённого развёртывания): `Enable-PSRemoting -Force`.
+- Учётная запись с правами администратора.
+- Доступ к RabbitMQ (проверьте `Test-NetConnection <rabbitmq-host> -Port 5672`).
+- .NET 8 Runtime — либо уже установлен, либо будет установлен скриптом.
+
+**На машине, откуда развёртываете:**
+
+- PowerShell 5.1 или новее, от имени администратора.
+- Доступ к файловому ресурсу с артефактом и установщиком .NET.
+- Если не домен — добавьте сервер в TrustedHosts:
+  ```powershell
+  Set-Item WSMan:\localhost\Client\TrustedHosts -Value "nsk-sapp01" -Force
+  ```
+
+### Подготовка файлов
+
+**1. Скачайте .NET 8 Runtime installer:**
+
+- https://dotnet.microsoft.com/download/dotnet/8.0
+- Раздел **.NET Runtime 8.0.x** → **Windows** → **x64** → `.exe`.
+- Положите на файловый ресурс: `\\fileserver\share\dotnet-runtime-8.0.22-win-x64.exe`.
+
+**2. Скачайте артефакт из CI:**
+
+- Откройте https://github.com/pomortsevov/ASUMI.Producer.RabbitMQ.Service/actions
+- Выберите свежий успешный запуск `build`.
+- Внизу страницы → **Artifacts** → `ASUMI.Producer.RabbitMQ.Service` → скачайте ZIP.
+- Распакуйте и положите содержимое в `\\fileserver\share\ASUMI.Producer.RabbitMQ.Service\`.
+
+### Запуск развёртывания
+
+**Удалённое (с вашей машины на сервер):**
+
+```powershell
+.\deploy\deploy.ps1 `
+    -ServerName nsk-sapp01 `
+    -ArtifactPath "\\fileserver\share\ASUMI.Producer.RabbitMQ.Service" `
+    -DotNetInstallerPath "\\fileserver\share\dotnet-runtime-8.0.22-win-x64.exe"
+```
+
+**Локальное (на самом сервере):**
+
+```powershell
+.\deploy\deploy.ps1 `
+    -ServerName nsk-sapp01 `
+    -ArtifactPath "C:\Install\ASUMI.Producer.RabbitMQ.Service" `
+    -DotNetInstallerPath "C:\Install\dotnet-runtime-8.0.22-win-x64.exe"
+```
+
+**Если .NET 8 уже установлен на сервере:**
+
+```powershell
+.\deploy\deploy.ps1 -ServerName nsk-sapp01 -SkipDotNetInstall
+```
+
+### Параметры скрипта
+
+| Параметр | Обязательный | По умолчанию | Описание |
+|---|---|---|---|
+| `-ServerName` | Да | — | Имя целевого сервера (`nsk-sapp01`). Если совпадает с локальным — развёртывание локальное. |
+| `-ArtifactPath` | Нет | `\\fileserver\share\ASUMI.Producer.RabbitMQ.Service` | Путь к папке с `.exe` и `appsettings*.json`. |
+| `-ServicePath` | Нет | `C:\Services\ASUMI.Producer.RabbitMQ.Service` | Куда разворачивать службу на сервере. |
+| `-ServiceName` | Нет | `ASUMI Producer RabbitMQ Service` | Имя службы в SCM. |
+| `-DotNetInstallerPath` | Нет | — | Путь к offline-установщику .NET 8 Runtime. |
+| `-SkipDotNetInstall` | Нет | — | Пропустить установку .NET (если уверены, что он уже есть). |
+
+### Что делает скрипт
+
+1. **Проверяет .NET 8 Runtime** на целевом сервере. Если нет — устанавливает через offline-установщик, winget или предлагает скачать вручную.
+2. **Проверяет доступность RabbitMQ** (читает `HostName` и `Port` из `appsettings.json`).
+3. **Останавливает и удаляет** существующую службу, если есть.
+4. **Копирует артефакт** в `C:\Services\ASUMI.Producer.RabbitMQ.Service`.
+5. **Создаёт службу** через `sc.exe create`, настраивает `failure` (recovery) и `AppDirectory`.
+6. **Запускает службу** и проверяет статус.
+7. **Показывает последние 15 строк логов** из `logs\`.
+
+### Настройка `appsettings.json` под прод
+
+Артефакт содержит `appsettings.json` из репозитория (с `localhost` и тестовыми кредами). **Перед развёртыванием на проде** замените значения на реальные:
+
+```json
+{
+  "RabbitMQ": {
+    "HostName": "rabbitmq.prod.local",
+    "Port": 5672,
+    "VirtualHost": "/prod",
+    "UserName": "asumi_producer",
+    "Password": "",
+    "ExchangeName": "asumi.exchange.prod",
+    "QueueName": "asumi.queue.prod",
+    "RoutingKey": "asumi.json"
+  },
+  "FilePublisher": {
+    "SourcePath": "D:\\ASUMI\\SourceJson",
+    "ProcessedPath": "D:\\ASUMI\\ProcessedJson",
+    "PollIntervalSeconds": 10
+  }
+}
+```
+
+**Пароль RabbitMQ — не храните в `appsettings.json`.** Способы:
+
+**Через переменные окружения** (рекомендуется):
+
+```powershell
+[Environment]::SetEnvironmentVariable("RabbitMQ__Password", "StrongP@ss", "Machine")
+```
+
+`Host.CreateDefaultBuilder` подхватит `RabbitMQ__Password` и перекроет значение из файла.
+
+**Через `appsettings.Production.json`** — отдельный файл рядом с `.exe`, не коммитится в репозиторий:
+
+```json
+{
+  "RabbitMQ": {
+    "Password": "StrongP@ss"
+  }
+}
+```
+
+Окружение по умолчанию — `Production`, файл подхватится поверх `appsettings.json`.
+
+### После развёртывания
+
+Проверьте:
+
+```powershell
+# Статус службы
+sc.exe query "ASUMI Producer RabbitMQ Service"
+
+# Логи
+Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabbitmq-*.log -Tail 20
+
+# Smoke-тест
+'{ "test": true }' | Set-Content D:\ASUMI\SourceJson\smoke.json -Encoding UTF8
+Start-Sleep -Seconds 15
+ls D:\ASUMI\SourceJson       # должно быть пусто
+ls D:\ASUMI\ProcessedJson    # должен появиться smoke-*.json
+```
+
+Сообщение должно появиться в RabbitMQ UI: http://rabbitmq.prod.local:15672 → **Queues** → `asumi.queue.prod`.
+
+### Обновление на сервере
+
+Повторный запуск скрипта **автоматически** останавливает и удаляет старую службу перед установкой новой. Просто:
+
+```powershell
+.\deploy\deploy.ps1 -ServerName nsk-sapp01 -SkipDotNetInstall
+```
+
+Скрипт скачает свежий артефакт из `-ArtifactPath` и развернёт его.
 
 ## Лицензия и авторство
 
