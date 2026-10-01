@@ -16,7 +16,8 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
 - `Microsoft.Extensions.Hosting.WindowsServices` 8.0.0
 - `Microsoft.Extensions.Options.DataAnnotations` — валидация конфигурации
 - `RabbitMQ.Client` 6.8.1
-- Serilog (консоль + файл с ротацией по дням)
+- Serilog (консоль + файл с ротацией по дням + собственный sink для Grafana Loki)
+- Отправка в Loki реализована вручную на `HttpClient` и `System.Text.Json` — без сторонних пакетов, см. «Отправка логов в Grafana Loki»
 
 ## Как работает
 
@@ -29,7 +30,7 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
                                      ▼                                        ▼
                           ┌─────────────────────┐                     ┌────────────┐
                           │   ProcessedPath     │                     │ asumi.queue│
-                          │   (успех)           │                     │  (TTL 30s) │
+                          │   (успех)           │                     │ (TTL 5 мин)│
                           └─────────────────────┘                     └─────┬──────┘
                                                                             │
                                                                             ▼
@@ -41,9 +42,12 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
 
 1. АСУМИ кладёт `*.json` в `SourcePath`.
 2. Служба раз в `PollIntervalSeconds` сканирует папку.
-3. Для каждого файла: читает → публикует в `asumi.exchange` с routing key `asumi.json` → копирует в `ProcessedPath` → удаляет исходник.
+3. Для каждого файла: читает → публикует в `asumi.exchange` с routing key `asumi.json` → перемещает в `ProcessedPath` → удаляет исходник.
 4. **Если RabbitMQ недоступен** — файл остаётся в `SourcePath`, попытка повторяется на следующем цикле. Ничего не теряется.
-5. Сообщения лежат в `asumi.queue` до 30 секунд (TTL) или до тех пор, пока их не заберёт consumer.
+5. Публикация считается успешной только после **подтверждения от брокера** (publisher confirms). Если для routing key нет привязки, брокер возвращает сообщение, `PublishAsync` возвращает `false`, и файл остаётся в `SourcePath`. Успешного лога при потерянном сообщении быть не может.
+6. Сообщения лежат в `asumi.queue` до 5 минут (TTL) или до тех пор, пока их не заберёт consumer.
+
+> **Кодировка.** Файлы АСУМИ приходят в **UTF-16LE**. Служба отправляет их в RabbitMQ **байт в байт**, без перекодирования. Consumer обязан читать UTF-16 — если он рассчитан на UTF-8, сообщения не разберутся. При старте служба пишет предупреждение, если увидела BOM `FF FE`.
 
 ## Структура репозитория
 
@@ -67,14 +71,18 @@ ASUMI.Producer.RabbitMQ.Service/
         │   └── IRabbitMqTopologyInitializer.cs
         ├── Configuration/
         │   ├── FilePublisherOptions.cs
+        │   ├── LokiOptions.cs
         │   └── RabbitMqOptions.cs
         ├── Hosting/
+        │   ├── PasswordResolver.cs
         │   └── ServiceConstants.cs
         ├── Infrastructure/
         │   ├── RabbitMqConnectionProvider.cs
         │   ├── RabbitMqMessagePublisher.cs
         │   ├── RabbitMqTopologyHostedService.cs
         │   └── RabbitMqTopologyInitializer.cs
+        ├── Observability/
+        │   └── LokiSink.cs
         └── Workers/
             └── FilePublisherWorker.cs
 ```
@@ -154,29 +162,30 @@ dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 Ожидаемый вывод при работающем RabbitMQ:
 
 ```
-[15:52:00 INF] Starting ASUMI Producer RabbitMQ Service...
+[15:52:00 INF] Starting ASUMI Producer RabbitMQ Service v1.0.8...
+[15:52:00 INF] RabbitMQ password resolved from Machine environment scope (RabbitMQ__Password).
+[15:52:00 INF] Loki sink enabled for http://172.18.28.118:3100, job=ASUMI.Producer.RabbitMQ.Service.
 [15:52:00 INF] Declaring RabbitMQ topology...
-[15:52:00 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
+[15:52:00 INF] Attempting to connect to RabbitMQ at 172.18.28.118:5672/ as NSK-ASUMI-PRODUCER...
 [15:52:00 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Producer.RabbitMQ.Service
 [15:52:05 INF] Exchange declared: asumi.exchange (topic, durable)
-[15:52:05 INF] Queue declared: asumi.queue (durable, TTL=30000ms)
+[15:52:05 INF] Queue declared: asumi.queue (durable, type=quorum, TTL=300000ms)
 [15:52:05 INF] Queue bound: asumi.queue -> asumi.exchange (routingKey=asumi.json)
 [15:52:05 INF] RabbitMQ topology is ready.
 [15:52:05 INF] FilePublisherWorker starting. Source=C:\SourceJson, Processed=C:\ProcessedJson, Mask=*.json, Interval=10s
-[15:52:15 INF] Read Z_25.01.22_13-42__d.ID-12_b.ID-.json (1165 chars, 1475 bytes UTF-8).
+[15:52:15 INF] Read Z_25.01.22_13-42__d.ID-12_b.ID-.json (1475 bytes).
 [15:52:15 INF] Published Z_25.01.22_13-42__d.ID-12_b.ID-.json (1475 bytes) to exchange asumi.exchange with routingKey asumi.json.
-[15:52:15 INF] Copied to processed: Z_25.01.22_13-42__d.ID-12_b.ID--20260921-155215341.json
+[15:52:15 INF] Moved to processed: Z_25.01.22_13-42__d.ID-12_b.ID--20260921-155215341.json
 ```
 
 Ожидаемый вывод при **недоступном** RabbitMQ (служба не падает):
 
 ```
-[15:54:00 INF] Starting ASUMI Producer RabbitMQ Service...
 [15:54:00 INF] Declaring RabbitMQ topology...
-[15:54:00 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
-[15:54:04 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
-[15:54:09 INF] Attempting to connect to RabbitMQ at localhost:5672/ as rmuser...
-[15:54:13 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
+[15:54:00 INF] Attempting to connect to RabbitMQ at 172.18.28.118:5672/ as NSK-ASUMI-PRODUCER...
+[15:54:04 WRN] Could not connect to RabbitMQ at 172.18.28.118:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
+[15:54:09 INF] Attempting to connect to RabbitMQ at 172.18.28.118:5672/ as NSK-ASUMI-PRODUCER...
+[15:54:13 WRN] Could not connect to RabbitMQ at 172.18.28.118:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
 ...
 ```
 
@@ -185,7 +194,7 @@ dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 ```
 [15:55:24 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Producer.RabbitMQ.Service
 [15:55:29 INF] Published Z_25.01.22_13-42__d.ID-6_b.ID-.json (1330 bytes) to exchange asumi.exchange with routingKey asumi.json.
-[15:55:29 INF] Copied to processed: Z_25.01.22_13-42__d.ID-6_b.ID--20260921-155529934.json
+[15:55:29 INF] Moved to processed: Z_25.01.22_13-42__d.ID-6_b.ID--20260921-155529934.json
 ```
 
 ## Публикация
@@ -267,15 +276,18 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 ```json
 {
   "RabbitMQ": {
-    "HostName": "localhost",
+    "HostName": "172.18.28.118",
     "Port": 5672,
     "VirtualHost": "/",
-    "UserName": "rmuser",
-    "Password": "rmpassword",
+    "UserName": "NSK-ASUMI-PRODUCER",
+    "Password": "",
     "ExchangeName": "asumi.exchange",
     "QueueName": "asumi.queue",
     "RoutingKey": "asumi.json",
-    "MessageTtlMs": 30000,
+    "MessageTtlMs": 300000,
+    "QueueType": "quorum",
+    "QuorumInitialGroupSize": 3,
+    "PublishConfirmTimeoutSeconds": 5,
     "Persistent": true,
     "AutomaticRecovery": true,
     "NetworkRecoveryIntervalSeconds": 10,
@@ -289,6 +301,16 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
     "FileMask": "*.json",
     "PollIntervalSeconds": 10
   },
+  "Loki": {
+    "Enabled": true,
+    "Url": "http://172.18.28.118:3100",
+    "Job": "ASUMI.Producer.RabbitMQ.Service",
+    "ServiceName": "ASUMI.Producer.RabbitMQ.Service",
+    "BatchSize": 100,
+    "FlushPeriodSeconds": 2,
+    "TimeoutSeconds": 5,
+    "QueueCapacity": 10000
+  },
   "Serilog": {
     "MinimumLevel": {
       "Default": "Information",
@@ -300,6 +322,8 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
   }
 }
 ```
+
+> `"Password": ""` — намеренно пусто. Секрет задаётся переменной окружения `RabbitMQ__Password`, см. раздел «Пароль RabbitMQ».
 
 ### Описание ключей `RabbitMQ`
 
@@ -313,7 +337,10 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 | `ExchangeName` | Имя topic-exchange | `asumi.exchange` |
 | `QueueName` | Имя очереди | `asumi.queue` |
 | `RoutingKey` | Routing key для bind и publish | `asumi.json` |
-| `MessageTtlMs` | TTL сообщений в очереди | `30000` |
+| `MessageTtlMs` | TTL сообщений в очереди | `300000` |
+| `QueueType` | Тип очереди: `quorum`, `classic`, `stream` | `quorum` |
+| `QuorumInitialGroupSize` | Размер начальной группы реплик, только для quorum | `3` |
+| `PublishConfirmTimeoutSeconds` | Ожидание publisher confirm, секунды | `5` |
 | `Persistent` | Persistent-сообщения | `true` |
 | `AutomaticRecovery` | Авто-восстановление соединения клиентом | `true` |
 | `NetworkRecoveryIntervalSeconds` | Интервал авто-восстановления (после разрыва) | `10` |
@@ -431,6 +458,87 @@ Publishing will fail until the secret is provided.
 
 Если пароль уже лежал в `appsettings.json` в предыдущих коммитах, он остаётся в истории репозитория. Удаление пароля из файла этого не отменяет — при необходимости история переписывается через `git filter-repo`.
 
+### Отправка логов в Grafana Loki
+
+Служба пишет логи одновременно в консоль, в файл рядом с `.exe` и в **Grafana Loki** через push API. Loki по умолчанию включён и находится на том же хосте, что и RabbitMQ.
+
+Включается ключом `Loki:Enabled`. В лог при старте видно, что произошло:
+
+```
+[INF] Loki sink enabled for http://172.18.28.118:3100, job=ASUMI.Producer.RabbitMQ.Service.
+```
+
+или
+
+```
+[INF] Loki sink disabled by configuration.
+```
+
+#### Запрос в Grafana
+
+```logql
+{job="ASUMI.Producer.RabbitMQ.Service"}
+```
+
+С меткой окружения, чтобы отделить локальные запуски от боевых:
+
+```logql
+{job="ASUMI.Producer.RabbitMQ.Service", env="Production"}
+```
+
+Только ошибки:
+
+```logql
+{job="ASUMI.Producer.RabbitMQ.Service"} |~ "(?i)error|fail"
+```
+
+#### Метки
+
+Sink добавляет к каждому потоку четыре метки:
+
+| Метка | Значение | Зачем |
+|---|---|---|
+| `job` | `ASUMI.Producer.RabbitMQ.Service` | выбор потока в Grafana |
+| `service_name` | `ASUMI.Producer.RabbitMQ.Service` | совпадает с именем сборки |
+| `env` | `Production` / `Development` | разделение боевых и локальных запусков |
+| `host` | имя машины, например `NSK-NA02` | на какой машине шел процесс |
+
+Loki сам проставляет `detected_level`, потому что строка начинается с `level=INF`. Без этого записи попадали бы в `unknown` и не фильтровались по уровню.
+
+> **Внимание, имена меток.** В этом Loki уже заняты `service=asumi-producer` и `service=asumi_exporter` — они принадлежат другим компонентам АСУМИ. Если занять то же имя, записи сольются с чужими и в Grafana получится каша. Своё имя держите отличным от соседних.
+
+#### Описание ключей `Loki`
+
+| Ключ | Назначение | По умолчанию |
+|---|---|---|
+| `Enabled` | Отправка в Loki | `false` |
+| `Url` | Базовый адрес Loki | `http://localhost:3100` |
+| `Job` | Метка `job` | `ASUMI.Producer.RabbitMQ.Service` |
+| `ServiceName` | Метка `service_name` | `ASUMI.Producer.RabbitMQ.Service` |
+| `BatchSize` | Записей в одном запросе | `100` |
+| `FlushPeriodSeconds` | Как часто отправлять накопленное, секунды | `2` |
+| `TimeoutSeconds` | Таймаут HTTP-запроса, секунды | `5` |
+| `QueueCapacity` | Размер очереди в памяти | `10000` |
+| `ApiKey` | Bearer-токен, если Loki с авторизацией | — |
+
+#### Поведение при недоступном Loki
+
+Недоступность Loki **не влияет на публикацию договоров**. События складываются в ограниченную очередь в памяти и отправляются фоновым таймером, поэтому медленный или лежащий Loki не блокирует воркер.
+
+- при переполнении очереди отбрасываются самые старые записи — лучше потерять лог, чем застрять на публикации
+- ошибка отправки приводит к отбрасыванию батча, исключение наружу не выпускается никогда
+- при остановке службы делается финальный сброс, чтобы хвост логов не потерялся
+
+Диагностика самого sink'а — почему записи отбрасываются — пишется отдельно, чтобы не попадать обратно в лог:
+
+```
+C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\loki-selflog.log
+```
+
+#### Почему не `Serilog.Sinks.Loki`
+
+Пакет написан вручную. Последняя стабильная версия `Serilog.Sinks.Loki` вышла около 2020 года и тянет `Newtonsoft.Json 12.0.3` вместе с `Serilog.Sinks.Http 5.2.1` — неподдерживаемые транзитивные зависимости под Serilog 8. Свой sink использует только `HttpClient` и `System.Text.Json`, которые уже есть в проекте.
+
 ## Управление службой
 
 | Действие | Команда |
@@ -505,19 +613,49 @@ docker logs rabbitmq --tail 30
 - **Queues** → `asumi.queue` существует, привязана к `asumi.exchange` с routing key `asumi.json`.
 - **Queues** → `asumi.queue` → **Message rates** — есть ли публикации.
 
-### Сообщения исчезают из очереди через 30 секунд
+### Сообщения исчезают из очереди через 5 минут
 
-Это **нормально** — у очереди `asumi.queue` установлен `x-message-ttl = 30000` (`MessageTtlMs`). Если consumer не заберёт сообщение за 30 секунд, оно удаляется. Когда появится consumer, TTL можно увеличить или отключить (`MessageTtlMs: 0`).
+Это **нормально** — у очереди `asumi.queue` установлен `x-message-ttl = 300000` (`MessageTtlMs`), то есть 5 минут. Если consumer не заберёт сообщение за это время, оно удаляется.
 
-> **Важно:** TTL очереди нельзя изменить после создания. Чтобы поменять — удалите очередь в UI RabbitMQ, потом перезапустите службу.
+> **Важно:** TTL очереди нельзя изменить после создания. Чтобы поменять — удалите очередь в UI RabbitMQ, потом перезапустите службу. То же касается `QueueType`: тип очереди необратим.
 
 ### Ошибка `PRECONDITION_FAILED` при `QueueDeclare`
 
-Очередь уже существует с другими параметрами (например, без TTL). Удалите её в UI (`Delete`), затем перезапустите службу:
+Очередь уже существует с другими параметрами. Типичные причины:
+
+- тип в конфиге не совпадает с типом в брокере (например, в конфиге `classic`, а очередь создана как `quorum`)
+- не совпадает TTL
+- для quorum не совпадает `QuorumInitialGroupSize`
+
+Посмотрите реальные аргументы очереди:
 
 ```powershell
-sc.exe stop "ASUMI Producer RabbitMQ Service"
-sc.exe start "ASUMI Producer RabbitMQ Service"
+# Management UI или HTTP API — посмотреть x-queue-type, x-message-ttl, x-quorum-initial-group-size
+```
+
+Приведите `QueueType`, `QuorumInitialGroupSize` и `MessageTtlMs` в `appsettings.json` к этим значениям. Пересоздавать очередь не нужно — объявление станет идемпотентным.
+
+### Логи не появляются в Loki
+
+Проверьте, что sink вообще включился — при старте есть строка `Loki sink enabled for ...`. Если `Loki sink disabled by configuration`, проверьте `Loki:Enabled`.
+
+Дальше смотрите диагностику самого sink'а, а не основной лог:
+
+```powershell
+Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\loki-selflog.log -Tail 20
+```
+
+Там будут код ответа от Loki и текст ошибки. Доступность:
+
+```powershell
+Test-NetConnection 172.18.28.118 -Port 3100
+Invoke-RestMethod http://172.18.28.118:3100/ready
+```
+
+Проверить, что записи реально дошли:
+
+```logql
+{job="ASUMI.Producer.RabbitMQ.Service"}
 ```
 
 ### Логи не появляются
