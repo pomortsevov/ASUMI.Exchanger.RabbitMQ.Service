@@ -133,9 +133,10 @@ Management UI: http://localhost:15672, логин `rmuser`, пароль `rmpass
 
 ## Локальный запуск (консоль)
 
-Из корня репозитория:
+Из корня репозитория. Пароль в репозитории не хранится, поэтому его нужно задать — иначе служба поднимется, но публиковать не сможет (см. раздел «Пароль RabbitMQ»):
 
 ```powershell
+$env:RabbitMQ__Password = "StrongP@ss"
 dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 ```
 
@@ -146,7 +147,7 @@ $env:DOTNET_ENVIRONMENT = "Development"
 dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 ```
 
-> **Что меняется в Development.** В `appsettings.Development.json` переопределяются только параметры подключения к RabbitMQ (`HostName`, `UserName`, `Password`) — это позволяет разработчику подключаться к локальному брокеру. Все остальные настройки (`FilePublisher.SourcePath`, `ProcessedPath`, `MessageTtlMs` и т.д.) берутся из `appsettings.json`. То есть `dotnet run` в Development работает с теми же папками `C:\SourceJson` и `C:\ProcessedJson`, что и продакшен-служба.
+> **Что меняется в Development.** В `appsettings.Development.json` переопределяются параметры подключения к RabbitMQ (`HostName`, `UserName`, `MessageTtlMs`, `QueueType`, `QuorumInitialGroupSize`) и `PublishConfirmTimeoutSeconds`. Все остальные настройки (`FilePublisher.SourcePath`, `ProcessedPath` и т.д.) берутся из `appsettings.json` — то есть `dotnet run` работает с теми же папками `C:\SourceJson` и `C:\ProcessedJson`, что и продакшен-служба.
 
 Остановить — `Ctrl+C`.
 
@@ -344,6 +345,91 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 sc.exe stop "ASUMI Producer RabbitMQ Service"
 sc.exe start "ASUMI Producer RabbitMQ Service"
 ```
+
+### Пароль RabbitMQ
+
+Пароль **не хранится в репозитории**. В `appsettings.json` и `appsettings.Development.json` поле `"Password"` намеренно пустое:
+
+```json
+"UserName": "NSK-ASUMI-PRODUCER",
+"Password": "",
+```
+
+Секрет передаётся одним из двух способов.
+
+#### Способ 1. Переменная окружения (рекомендуется)
+
+Для локального запуска — на уровне текущего процесса, действует до закрытия окна PowerShell:
+
+```powershell
+$env:RabbitMQ__Password = "StrongP@ss"
+dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
+```
+
+На сервере — постоянно, для всех новых процессов:
+
+```powershell
+# PowerShell от имени администратора
+[Environment]::SetEnvironmentVariable("RabbitMQ__Password", "StrongP@ss", "Machine")
+sc.exe stop "ASUMI Producer RabbitMQ Service"
+sc.exe start "ASUMI Producer RabbitMQ Service"
+```
+
+Служба читает переменную при старте, поэтому перезапуск обязателен.
+
+**Где это лежит в реестре:**
+
+```
+HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment
+```
+
+Имя значения — `RabbitMQ__Password`, тип `REG_SZ`. Проверить и изменить вручную:
+
+```powershell
+# прочитать
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v RabbitMQ__Password
+
+# записать
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v RabbitMQ__Password /t REG_SZ /d "StrongP@ss" /f
+```
+
+Два замечания. Значение хранится открытым текстом и доступно администраторам и процессам пользователя — в отличие от пароля в базе. И при ручной правке через `reg add` переменная не разошлётся по системе: в отличие от `SetEnvironmentVariable`, никто не отправляет `WM_SETTINGCHANGE`, поэтому нужна перезагрузка машины или повторный вход.
+
+Удалить переменную:
+
+```powershell
+[Environment]::SetEnvironmentVariable("RabbitMQ__Password", $null, "Machine")
+```
+
+#### Способ 2. `appsettings.Production.json`
+
+Файл рядом с `.exe` в `C:\Services\ASUMI.Producer.RabbitMQ.Service\`. В репозиторий не попадает — уже в `.gitignore`. Перекрывает `appsettings.json`:
+
+```json
+{
+  "RabbitMQ": {
+    "Password": "StrongP@ss"
+  }
+}
+```
+
+Читается штатно, `Host.CreateDefaultBuilder` подхватывает `appsettings.{DOTNET_ENVIRONMENT}.json` поверх базового. Перезапуск службы не нужен, достаточно перезапустить — то есть он тоже нужен, так как конфигурация читается при старте процесса. Разница со способом 1 в том, что секрет лежит файлом на диске рядом с `.exe`, и его достаточно просто скопировать.
+
+#### Если пароль не задан
+
+Служба **не падает** — она поднимается, пишет в лог `ERR` и ждёт брокер. Файлы при этом остаются в `SourcePath` и не теряются:
+
+```
+[08:25:56 ERR] RabbitMQ Password is empty. Set the RabbitMQ__Password environment variable
+(Machine scope) or put it in appsettings.Production.json next to the exe.
+Publishing will fail until the secret is provided.
+```
+
+Уровень `ERR`, а не `WRN`: публикация невозможна, пока секрет не задан. Сама служба при этом продолжает работать.
+
+#### Уже установленная парольная политика
+
+Если пароль уже лежал в `appsettings.json` в предыдущих коммитах, он остаётся в истории репозитория. Удаление пароля из файла этого не отменяет — при необходимости история переписывается через `git filter-repo`.
 
 ## Управление службой
 
@@ -600,13 +686,7 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 }
 ```
 
-**Пароль RabbitMQ — не храните в `appsettings.json`.** Способы:
-
-**Через переменные окружения** (рекомендуется):
-
-```powershell
-[Environment]::SetEnvironmentVariable("RabbitMQ__Password", "StrongP@ss", "Machine")
-```
+**Пароль RabbitMQ в `appsettings.json` отсутствует.** Значение `"Password": ""` — намеренное. Перед развёртыванием на сервере задайте секрет одним из способов из раздела [«Пароль RabbitMQ»](#пароль-rabbitmq): переменная окружения `RabbitMQ__Password` или `appsettings.Production.json` рядом с `.exe`.
 
 `Host.CreateDefaultBuilder` подхватит `RabbitMQ__Password` и перекроет значение из файла.
 

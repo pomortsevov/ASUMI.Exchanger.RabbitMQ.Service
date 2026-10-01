@@ -18,8 +18,13 @@ public sealed class RabbitMqOptions
     [Required]
     public string UserName { get; set; } = "guest";
 
-    [Required]
-    public string Password { get; set; } = "guest";
+    /// <summary>
+    /// Пароль намеренно пуст в appsettings.json — секрет хранится в переменной окружения
+    /// RabbitMQ__Password или в appsettings.Production.json рядом с exe.
+    /// Не [Required]: служба должна подниматься и ждать брокер, а не падать без секрета.
+    /// Пока пароль не задан, файлы остаются в SourcePath.
+    /// </summary>
+    public string Password { get; set; } = string.Empty;
 
     [Required]
     public string ExchangeName { get; set; } = "asumi.exchange";
