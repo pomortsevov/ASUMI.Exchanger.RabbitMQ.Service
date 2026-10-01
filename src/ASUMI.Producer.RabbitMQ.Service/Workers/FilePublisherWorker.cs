@@ -3,7 +3,6 @@ using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using System.Text;
 
 namespace ASUMI.Producer.RabbitMQ.Service.Workers;
 
@@ -114,13 +113,18 @@ public sealed class FilePublisherWorker : BackgroundService
         DirectoryInfo outputDir,
         CancellationToken stoppingToken)
     {
-        // 1. Прочитать содержимое
-        var content = await File.ReadAllTextAsync(fi.FullName, Encoding.UTF8, stoppingToken);
-        var body = Encoding.UTF8.GetBytes(content);
+        // 1. Прочитать содержимое В СЫРЫХ БАЙТАХ.
+        // Декодировать нельзя: файлы АСУМИ приходят в UTF-16LE (BOM FF FE), и любая
+        // конвертация через Encoding.UTF8 портит их — на провереном файле 3414 байт
+        // превращались в 1996, то есть терялась половина содержимого. Байты на диске
+        // и байты в RabbitMQ должны совпадать байт в байт.
+        var body = await File.ReadAllBytesAsync(fi.FullName, stoppingToken);
 
         _logger.LogInformation(
-            "Read {File} ({Chars} chars, {Bytes} bytes UTF-8).",
-            fi.Name, content.Length, body.Length);
+            "Read {File} ({Bytes} bytes).",
+            fi.Name, body.Length);
+
+        WarnIfLikelyUtf16(fi.Name, body);
 
         // 2. Публикация в RabbitMQ.
         // Если публикация не удалась — НЕ перемещаем и НЕ удаляем файл: вернёмся к нему на следующем цикле.
@@ -148,5 +152,25 @@ public sealed class FilePublisherWorker : BackgroundService
         // 4. Удалить исходник
         fi.Delete();
         _logger.LogDebug("Source file deleted: {SourceFile}", fi.FullName);
+    }
+
+    /// <summary>
+    /// Файлы АСУМИ приходят в UTF-16LE. Сообщение отправляется байт в байт, поэтому consumer
+    /// обязан уметь читать UTF-16 — предупреждаем в лог, чтобы это не выяснилось позже.
+    /// </summary>
+    private void WarnIfLikelyUtf16(string fileName, byte[] body)
+    {
+        if (body.Length < 2)
+            return;
+
+        var littleEndian = body[0] == 0xFF && body[1] == 0xFE;
+        var bigEndian = body[0] == 0xFE && body[1] == 0xFF;
+        if (!littleEndian && !bigEndian)
+            return;
+
+        _logger.LogWarning(
+            "{File} starts with a UTF-16 BOM ({Encoding}). It is published byte-for-byte, so the " +
+            "consumer must decode UTF-16. If it expects UTF-8, decoding will fail.",
+            fileName, littleEndian ? "UTF-16LE" : "UTF-16BE");
     }
 }
