@@ -43,8 +43,16 @@ public sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
         // 2. Queue (durable, с TTL на сообщения)
         var queueArgs = new Dictionary<string, object>
         {
-            { "x-message-ttl", _options.MessageTtlMs }
+            { "x-message-ttl", _options.MessageTtlMs },
+            { "x-queue-type", _options.QueueType }
         };
+
+        // Размер группы реплик — только для quorum. Для classic/stream аргумент неприменим
+        // и вызовет 406.
+        if (string.Equals(_options.QueueType, "quorum", StringComparison.OrdinalIgnoreCase))
+        {
+            queueArgs["x-quorum-initial-group-size"] = _options.QuorumInitialGroupSize;
+        }
 
         channel.QueueDeclare(
             queue: _options.QueueName,
@@ -54,8 +62,8 @@ public sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
             arguments: queueArgs);
 
         _logger.LogInformation(
-            "Queue declared: {Queue} (durable, TTL={TtlMs}ms)",
-            _options.QueueName, _options.MessageTtlMs);
+            "Queue declared: {Queue} (durable, type={QueueType}, TTL={TtlMs}ms)",
+            _options.QueueName, _options.QueueType, _options.MessageTtlMs);
 
         // 3. Bind очереди к exchange по routing key
         channel.QueueBind(

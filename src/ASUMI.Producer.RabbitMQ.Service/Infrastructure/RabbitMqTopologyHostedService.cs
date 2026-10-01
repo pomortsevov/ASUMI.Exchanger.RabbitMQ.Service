@@ -33,7 +33,7 @@ public sealed class RabbitMqTopologyHostedService : IHostedService
         }
         catch (Exception ex)
         {
-            // Не роняем хост — HeartbeatWorker всё равно будет ждать RabbitMQ.
+            // Не роняем хост — FilePublisherWorker дождётся RabbitMQ при первой публикации.
             _logger.LogError(ex, "Unexpected error during topology initialization. Service will continue.");
         }
     }

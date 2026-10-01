@@ -11,15 +11,18 @@ public sealed class FilePublisherWorker : BackgroundService
 {
     private readonly ILogger<FilePublisherWorker> _logger;
     private readonly FilePublisherOptions _options;
+    private readonly RabbitMqOptions _rabbitMq;
     private readonly IMessagePublisher _publisher;
 
     public FilePublisherWorker(
         ILogger<FilePublisherWorker> logger,
         IOptions<FilePublisherOptions> options,
+        IOptions<RabbitMqOptions> rabbitMq,
         IMessagePublisher publisher)
     {
         _logger = logger;
         _options = options.Value;
+        _rabbitMq = rabbitMq.Value;
         _publisher = publisher;
     }
 
@@ -132,7 +135,7 @@ public sealed class FilePublisherWorker : BackgroundService
 
         _logger.LogInformation(
             "Published {File} ({Bytes} bytes) to exchange {Exchange} with routingKey {RoutingKey}.",
-            fi.Name, body.Length, "asumi.exchange", "asumi.json");
+            fi.Name, body.Length, _rabbitMq.ExchangeName, _rabbitMq.RoutingKey);
 
         // 3. Переместить в processed — только после успешной публикации
         var processedName = $"{Path.GetFileNameWithoutExtension(fi.Name)}-" +

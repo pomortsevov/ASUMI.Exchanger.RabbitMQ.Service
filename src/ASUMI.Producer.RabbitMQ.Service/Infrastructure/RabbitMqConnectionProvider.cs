@@ -53,6 +53,12 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
                 return channel;
 
             await EnsureConnectedAsync(cancellationToken);
+
+            // Пауза нужна только если соединение так и не появилось — иначе после
+            // успешного подключения простаивали бы лишние ReconnectIntervalSeconds.
+            if (IsConnected)
+                continue;
+
             await Task.Delay(TimeSpan.FromSeconds(_options.ReconnectIntervalSeconds), cancellationToken);
         }
 

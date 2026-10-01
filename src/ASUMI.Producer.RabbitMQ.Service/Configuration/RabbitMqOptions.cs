@@ -33,6 +33,28 @@ public sealed class RabbitMqOptions
     [Range(0, int.MaxValue)]
     public int MessageTtlMs { get; set; } = 30000;
 
+    /// <summary>
+    /// Тип очереди: quorum, classic или stream. Должен совпадать с уже созданной в брокере —
+    /// иначе QueueDeclare вернёт 406 PRECONDITION_FAILED. Тип нельзя сменить после создания.
+    /// </summary>
+    [Required]
+    public string QueueType { get; set; } = "quorum";
+
+    /// <summary>
+    /// Размер начальной группы реплик для quorum-очереди. Учитывается только при создании
+    /// очереди. Для существующей quorum-очереди значение в брокере должно совпадать,
+    /// иначе QueueDeclare вернёт 406.
+    /// </summary>
+    [Range(1, 15)]
+    public int QuorumInitialGroupSize { get; set; } = 3;
+
+    /// <summary>
+    /// Сколько ждать подтверждения от брокера, что сообщение принято, перед тем как
+    /// считать публикацию успешной. Нужен, чтобы обнаружить публикацию в никуда.
+    /// </summary>
+    [Range(1, 60)]
+    public int PublishConfirmTimeoutSeconds { get; set; } = 5;
+
     public bool Persistent { get; set; } = true;
 
     public bool AutomaticRecovery { get; set; } = true;

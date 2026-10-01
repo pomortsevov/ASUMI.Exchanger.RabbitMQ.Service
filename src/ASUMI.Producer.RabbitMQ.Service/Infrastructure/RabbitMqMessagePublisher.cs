@@ -3,6 +3,7 @@ using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 
 namespace ASUMI.Producer.RabbitMQ.Service.Infrastructure;
 
@@ -15,6 +16,9 @@ public sealed class RabbitMqMessagePublisher : IMessagePublisher, IDisposable
     private readonly SemaphoreSlim _publishLock = new(1, 1);
     private IModel? _channel;
     private bool _disposed;
+
+    /// <summary>Произошёл ли BasicReturn для текущей публикации (сообщение ушло в никуда).</summary>
+    private bool _returned;
 
     public RabbitMqMessagePublisher(
         ILogger<RabbitMqMessagePublisher> logger,
@@ -47,12 +51,20 @@ public sealed class RabbitMqMessagePublisher : IMessagePublisher, IDisposable
                 {
                     return false;
                 }
+
+                // Publisher confirms: без них BasicPublish возвращается сразу, и мы не знаем,
+                // дошло ли сообщение до брокера.
+                _channel.ConfirmSelect();
+                _channel.BasicReturn += OnBasicReturn;
             }
 
             var props = _channel.CreateBasicProperties();
             props.Persistent = _options.Persistent;
             props.ContentType = "application/json";
             props.ContentEncoding = "utf-8";
+            props.MessageId = Guid.NewGuid().ToString("N");
+
+            _returned = false;
 
             try
             {
@@ -60,7 +72,32 @@ public sealed class RabbitMqMessagePublisher : IMessagePublisher, IDisposable
                     exchange: _options.ExchangeName,
                     routingKey: _options.RoutingKey,
                     basicProperties: props,
-                    body: body);
+                    body: body,
+                    // mandatory: если для routingKey нет привязки, брокер вернёт сообщение
+                    // через BasicReturn, а не отбросит молча.
+                    mandatory: true);
+
+                // Ждём подтверждения от брокера. Без этого успешный BasicPublish
+                // не означает, что сообщение где-то лежит.
+                var timeout = TimeSpan.FromSeconds(_options.PublishConfirmTimeoutSeconds);
+                if (!_channel.WaitForConfirms(timeout))
+                {
+                    _logger.LogWarning(
+                        "Broker did not confirm publish within {Timeout}s. Treating as failure.",
+                        _options.PublishConfirmTimeoutSeconds);
+
+                    _channel?.Dispose();
+                    _channel = null;
+                    return false;
+                }
+
+                if (_returned)
+                {
+                    _logger.LogWarning(
+                        "Message was returned by broker — no queue is bound to {Exchange} with routingKey {RoutingKey}.",
+                        _options.ExchangeName, _options.RoutingKey);
+                    return false;
+                }
 
                 return true;
             }
@@ -79,6 +116,18 @@ public sealed class RabbitMqMessagePublisher : IMessagePublisher, IDisposable
         {
             _publishLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Брокер вернул сообщение: под exchange/routingKey нет очереди. Публикация не удалась —
+    /// вызывающий код оставит файл в SourcePath.
+    /// </summary>
+    private void OnBasicReturn(object? sender, BasicReturnEventArgs ea)
+    {
+        _returned = true;
+        _logger.LogWarning(
+            "BasicReturn: replyCode={ReplyCode} replyText={ReplyText} exchange={Exchange} routingKey={RoutingKey}",
+            ea.ReplyCode, ea.ReplyText, ea.Exchange, ea.RoutingKey);
     }
 
     public void Dispose()
