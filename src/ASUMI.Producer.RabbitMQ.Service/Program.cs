@@ -5,6 +5,7 @@ using ASUMI.Producer.RabbitMQ.Service.Infrastructure;
 using ASUMI.Producer.RabbitMQ.Service.Workers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Settings.Configuration;
 using System.Globalization;
@@ -37,6 +38,9 @@ public class Program
 
             Log.Information("Starting {ServiceName} v{Version}...", ServiceConstants.ServiceName, version);
 
+            // Заполняется в ConfigureServices — там PasswordResolver смотрит оба scope.
+            var passwordSource = string.Empty;
+
             var host = Host.CreateDefaultBuilder(args)
                 .UseWindowsService(o => o.ServiceName = ServiceConstants.ServiceName)
                 .UseSerilog((ctx, cfg) =>
@@ -54,6 +58,10 @@ public class Program
                 })
                 .ConfigureServices((ctx, services) =>
                 {
+                    // Выполняется до бинда опций ниже, чтобы значение успело попасть в конфигурацию.
+                    PasswordResolver.Resolve(ctx.Configuration, out var src);
+                    passwordSource = src;
+
                     services.AddOptions<RabbitMqOptions>()
                         .Bind(ctx.Configuration.GetSection(RabbitMqOptions.SectionName))
                         .ValidateDataAnnotations()
@@ -72,6 +80,24 @@ public class Program
                     services.AddHostedService<FilePublisherWorker>();
                 })
                 .Build();
+
+            // Откуда взят пароль — самая частая причина «работало локально, не работает
+            // на сервере». Значение не логируем, только источник.
+            var startupLogger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+            if (!string.IsNullOrEmpty(passwordSource))
+            {
+                startupLogger.LogInformation(
+                    "RabbitMQ password resolved from {Source}.", passwordSource);
+            }
+            else
+            {
+                startupLogger.LogError(
+                    "RabbitMQ password not found. Checked Machine scope, User scope and configuration. " +
+                    "Set {EnvVarName} in Machine scope for a Windows service — User scope is not " +
+                    "visible to a process running as LocalSystem, or put Password into " +
+                    "appsettings.Production.json next to the exe. Publishing will fail until then.",
+                    PasswordResolver.EnvVarName);
+            }
 
             host.Run();
             return 0;

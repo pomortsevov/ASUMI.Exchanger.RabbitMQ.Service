@@ -26,16 +26,6 @@ public sealed class RabbitMqTopologyInitializer : IRabbitMqTopologyInitializer
     {
         _logger.LogInformation("Declaring RabbitMQ topology...");
 
-        if (string.IsNullOrWhiteSpace(_options.Password))
-        {
-            // Не фатально: служба продолжает ждать брокер, файлы остаются в SourcePath.
-            // ERR, а не WRN: публикация невозможна, пока не задан секрет — это не штатное ожидание.
-            _logger.LogError(
-                "RabbitMQ Password is empty. Set the RabbitMQ__Password environment variable " +
-                "(Machine scope) or put it in appsettings.Production.json next to the exe. " +
-                "Publishing will fail until the secret is provided.");
-        }
-
         using var channel = await _rabbit.WaitForChannelAsync(cancellationToken);
 
         // 1. Exchange (topic, durable)
