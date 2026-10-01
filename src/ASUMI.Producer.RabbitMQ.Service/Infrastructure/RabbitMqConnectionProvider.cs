@@ -1,5 +1,6 @@
 using ASUMI.Producer.RabbitMQ.Service.Abstractions;
 using ASUMI.Producer.RabbitMQ.Service.Configuration;
+using ASUMI.Producer.RabbitMQ.Service.Observability;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
@@ -99,17 +100,23 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
                 var connection = factory.CreateConnection(_options.ConnectionName);
 
                 connection.ConnectionShutdown += (_, ea) =>
+                {
+                    ProducerMetrics.RabbitMqConnected.Set(0);
                     _logger.LogWarning("RabbitMQ connection shutdown: {Reason}", ea.ReplyText);
+                };
                 connection.CallbackException += (_, ea) =>
                     _logger.LogError(ea.Exception, "RabbitMQ callback exception.");
                 connection.ConnectionBlocked += (_, ea) =>
                     _logger.LogWarning("RabbitMQ connection blocked: {Reason}", ea.Reason);
 
                 _connection = connection;
+                ProducerMetrics.RabbitMqConnected.Set(1);
                 _logger.LogInformation("Connected to RabbitMQ. ConnectionName={ConnectionName}", _options.ConnectionName);
             }
             catch (Exception ex)
             {
+                ProducerMetrics.RabbitMqConnected.Set(0);
+
                 // Пишем только тип и сообщение без стектрейса — иначе лог засоряется при недоступном RabbitMQ.
                 _logger.LogWarning(
                     "Could not connect to RabbitMQ at {Host}:{Port}{VHost} ({ExceptionType}): {Message}. Will retry in {RetryInterval}s.",
@@ -133,6 +140,7 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
             if (_connection is { IsOpen: true })
                 _connection.Close(TimeSpan.FromSeconds(5));
             _connection?.Dispose();
+            ProducerMetrics.RabbitMqConnected.Set(0);
             _logger.LogInformation("RabbitMQ connection closed.");
         }
         catch (Exception ex)

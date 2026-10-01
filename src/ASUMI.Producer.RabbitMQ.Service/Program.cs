@@ -93,10 +93,20 @@ public class Program
                         .ValidateDataAnnotations()
                         .ValidateOnStart();
 
+                    services.AddOptions<MetricsOptions>()
+                        .Bind(ctx.Configuration.GetSection(MetricsOptions.SectionName))
+                        .ValidateDataAnnotations()
+                        .ValidateOnStart();
+
+                    // До первого соединения метрика не публикуется, и на графике был бы провал.
+                    ProducerMetrics.RabbitMqConnected.Set(0);
+
                     services.AddSingleton<IRabbitMqConnectionProvider, RabbitMqConnectionProvider>();
                     services.AddSingleton<IRabbitMqTopologyInitializer, RabbitMqTopologyInitializer>();
                     services.AddSingleton<IMessagePublisher, RabbitMqMessagePublisher>();
 
+                    // Метрики первыми, чтобы порт поднялся до начала публикации.
+                    services.AddHostedService<MetricsServerHostedService>();
                     services.AddHostedService<RabbitMqTopologyHostedService>();
                     services.AddHostedService<FilePublisherWorker>();
                 })

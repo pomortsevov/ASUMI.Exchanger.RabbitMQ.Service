@@ -489,6 +489,9 @@ appsettings.Production.json
 appsettings.Local.json
 *.log
 
+# Внутренние заметки с адресами инфраструктуры и паролями — в публичный репозиторий не попадают.
+METRICS-HANDOFF.md
+
 publish/
 
 publish/

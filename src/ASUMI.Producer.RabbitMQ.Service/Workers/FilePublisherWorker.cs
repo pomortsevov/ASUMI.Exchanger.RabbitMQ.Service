@@ -1,8 +1,10 @@
 using ASUMI.Producer.RabbitMQ.Service.Abstractions;
 using ASUMI.Producer.RabbitMQ.Service.Configuration;
+using ASUMI.Producer.RabbitMQ.Service.Observability;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
 
 namespace ASUMI.Producer.RabbitMQ.Service.Workers;
 
@@ -81,6 +83,11 @@ public sealed class FilePublisherWorker : BackgroundService
         CancellationToken stoppingToken)
     {
         var files = inputDir.GetFiles(_options.FileMask);
+
+        // Ставим до раннего возврата: иначе при пустом каталоге метрика не обновится
+        // и продолжит показывать прошлое значение.
+        ProducerMetrics.FilesPending.Set(files.Length);
+
         if (files.Length == 0)
         {
             _logger.LogDebug("No files found in {Source}.", _options.SourcePath);
@@ -104,6 +111,7 @@ public sealed class FilePublisherWorker : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to process {File}.", fi.Name);
+                ProducerMetrics.FilesFailed.Inc();
             }
         }
     }
@@ -118,6 +126,7 @@ public sealed class FilePublisherWorker : BackgroundService
         // конвертация через Encoding.UTF8 портит их — на провереном файле 3414 байт
         // превращались в 1996, то есть терялась половина содержимого. Байты на диске
         // и байты в RabbitMQ должны совпадать байт в байт.
+        var startedAt = Stopwatch.StartNew();
         var body = await File.ReadAllBytesAsync(fi.FullName, stoppingToken);
 
         _logger.LogInformation(
@@ -134,12 +143,17 @@ public sealed class FilePublisherWorker : BackgroundService
             _logger.LogWarning(
                 "RabbitMQ not available — {File} will be retried on next cycle.",
                 fi.Name);
+            ProducerMetrics.FilesDeferred.Inc();
             return;
         }
 
         _logger.LogInformation(
             "Published {File} ({Bytes} bytes) to exchange {Exchange} with routingKey {RoutingKey}.",
             fi.Name, body.Length, _rabbitMq.ExchangeName, _rabbitMq.RoutingKey);
+
+        ProducerMetrics.PublishDuration.Observe(startedAt.Elapsed.TotalSeconds);
+        ProducerMetrics.FilesPublished.Inc();
+        ProducerMetrics.LastPublishTimestamp.Set(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
         // 3. Переместить в processed — только после успешной публикации.
         // Move, а не CopyTo + Delete: перемещение атомарно в пределах тома, поэтому
@@ -172,5 +186,7 @@ public sealed class FilePublisherWorker : BackgroundService
             "{File} starts with a UTF-16 BOM ({Encoding}). It is published byte-for-byte, so the " +
             "consumer must decode UTF-16. If it expects UTF-8, decoding will fail.",
             fileName, littleEndian ? "UTF-16LE" : "UTF-16BE");
+
+        ProducerMetrics.BomWarnings.Inc();
     }
 }
