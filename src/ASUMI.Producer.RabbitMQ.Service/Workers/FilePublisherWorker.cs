@@ -141,17 +141,17 @@ public sealed class FilePublisherWorker : BackgroundService
             "Published {File} ({Bytes} bytes) to exchange {Exchange} with routingKey {RoutingKey}.",
             fi.Name, body.Length, _rabbitMq.ExchangeName, _rabbitMq.RoutingKey);
 
-        // 3. Переместить в processed — только после успешной публикации
+        // 3. Переместить в processed — только после успешной публикации.
+        // Move, а не CopyTo + Delete: перемещение атомарно в пределах тома, поэтому
+        // промежуточного состояния "скопировано, но не удалено" не существует. При падении
+        // процесса в old-варианте файл успевал остаться в SourcePath и публиковался
+        // повторно — consumer получал дубликат.
         var processedName = $"{Path.GetFileNameWithoutExtension(fi.Name)}-" +
                             $"{DateTime.Now:yyyyMMdd-HHmmssfff}{fi.Extension}";
         var dst = Path.Combine(outputDir.FullName, processedName);
 
-        fi.CopyTo(dst, overwrite: true);
-        _logger.LogInformation("Copied to processed: {ProcessedFile}", processedName);
-
-        // 4. Удалить исходник
-        fi.Delete();
-        _logger.LogDebug("Source file deleted: {SourceFile}", fi.FullName);
+        File.Move(fi.FullName, dst, overwrite: true);
+        _logger.LogInformation("Moved to processed: {ProcessedFile}", processedName);
     }
 
     /// <summary>
