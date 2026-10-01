@@ -133,7 +133,7 @@ public sealed class FilePublisherWorker : BackgroundService
             "Read {File} ({Bytes} bytes).",
             fi.Name, body.Length);
 
-        WarnIfLikelyUtf16(fi.Name, body);
+        CheckForUnexpectedEncoding(fi.Name, body);
 
         // 2. Публикация в RabbitMQ.
         // Если публикация не удалась — НЕ перемещаем и НЕ удаляем файл: вернёмся к нему на следующем цикле.
@@ -169,24 +169,30 @@ public sealed class FilePublisherWorker : BackgroundService
     }
 
     /// <summary>
-    /// Файлы АСУМИ приходят в UTF-16LE. Сообщение отправляется байт в байт, поэтому consumer
-    /// обязан уметь читать UTF-16 — предупреждаем в лог, чтобы это не выяснилось позже.
-    /// </summary>
-    private void WarnIfLikelyUtf16(string fileName, byte[] body)
+/// UTF-16 — ожидаемый формат файлов АСУМИ: проверено на 269 файлах без исключения,
+/// ни одного в UTF-8 и ни одного без BOM. Поэтому предупреждаем не о UTF-16, а об
+/// отклонении от него. Иначе WRN летел на каждом файле, то есть на 100% записей, и
+/// сигнал превращался в шум.
+/// <para>
+/// Файл отправляется байт в байт, поэтому кодировку разбирает consumer. Смена формата
+/// на стороне АСУМИ сломала бы его незаметно — метрика отклонений это покажет.
+/// </para>
+/// </summary>
+    private void CheckForUnexpectedEncoding(string fileName, byte[] body)
     {
-        if (body.Length < 2)
+        var hasUtf16Bom = body.Length >= 2 &&
+                          ((body[0] == 0xFF && body[1] == 0xFE) || (body[0] == 0xFE && body[1] == 0xFF));
+        if (hasUtf16Bom)
             return;
 
-        var littleEndian = body[0] == 0xFF && body[1] == 0xFE;
-        var bigEndian = body[0] == 0xFE && body[1] == 0xFF;
-        if (!littleEndian && !bigEndian)
-            return;
+        var hasUtf8Bom = body.Length >= 3 && body[0] == 0xEF && body[1] == 0xBB && body[2] == 0xBF;
+        var detected = hasUtf8Bom ? "UTF-8 BOM" : "no BOM";
+
+        ProducerMetrics.FilesUnexpectedEncoding.Inc();
 
         _logger.LogWarning(
-            "{File} starts with a UTF-16 BOM ({Encoding}). It is published byte-for-byte, so the " +
-            "consumer must decode UTF-16. If it expects UTF-8, decoding will fail.",
-            fileName, littleEndian ? "UTF-16LE" : "UTF-16BE");
-
-        ProducerMetrics.BomWarnings.Inc();
+            "{File} has no UTF-16 BOM ({Detected}). ASUMI writes UTF-16LE, so this is unexpected. " +
+            "The file is published byte-for-byte and the consumer has to decode it accordingly.",
+            fileName, detected);
     }
 }

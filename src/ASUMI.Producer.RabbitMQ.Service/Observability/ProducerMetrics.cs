@@ -31,9 +31,14 @@ public static class ProducerMetrics
         "asumi_producer_files_deferred_total",
         "Publications skipped because RabbitMQ was unavailable; the file is retried next cycle.");
 
-    public static readonly Counter BomWarnings = Metrics.CreateCounter(
-        "asumi_producer_bom_warnings_total",
-        "Files whose content starts with a UTF-16 BOM and are published byte-for-byte.");
+    /// <summary>
+    /// Файлы без ожидаемого UTF-16 BOM. АСУМИ пишет UTF-16LE, поэтому ненулевое
+    /// значение означает, что формат на стороне отправителя изменился и consumer,
+    /// читающий UTF-16, начнёт получать нечитаемые сообщения.
+    /// </summary>
+    public static readonly Counter FilesUnexpectedEncoding = Metrics.CreateCounter(
+        "asumi_producer_files_unexpected_encoding_total",
+        "Files without the expected UTF-16 BOM, published byte-for-byte to a UTF-16 consumer.");
 
     public static readonly Histogram PublishDuration = Metrics.CreateHistogram(
         "asumi_producer_publish_duration_seconds",
