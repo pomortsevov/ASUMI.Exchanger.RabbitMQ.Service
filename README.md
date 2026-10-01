@@ -16,6 +16,7 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
 - `Microsoft.Extensions.Hosting.WindowsServices` 8.0.0
 - `Microsoft.Extensions.Options.DataAnnotations` — валидация конфигурации
 - `RabbitMQ.Client` 6.8.1
+- `prometheus-net` 8.2.1 — метрики для Prometheus (`MetricServer`, без `prometheus-net.AspNetCore`)
 - Serilog (консоль + файл с ротацией по дням + собственный sink для Grafana Loki)
 - Отправка в Loki реализована вручную на `HttpClient` и `System.Text.Json` — без сторонних пакетов, см. «Отправка логов в Grafana Loki»
 
@@ -72,6 +73,7 @@ ASUMI.Producer.RabbitMQ.Service/
         ├── Configuration/
         │   ├── FilePublisherOptions.cs
         │   ├── LokiOptions.cs
+        │   ├── MetricsOptions.cs
         │   └── RabbitMqOptions.cs
         ├── Hosting/
         │   ├── PasswordResolver.cs
@@ -82,7 +84,9 @@ ASUMI.Producer.RabbitMQ.Service/
         │   ├── RabbitMqTopologyHostedService.cs
         │   └── RabbitMqTopologyInitializer.cs
         ├── Observability/
-        │   └── LokiSink.cs
+        │   ├── LokiSink.cs
+        │   ├── MetricsServerHostedService.cs
+        │   └── ProducerMetrics.cs
         └── Workers/
             └── FilePublisherWorker.cs
 ```
@@ -310,6 +314,10 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
     "FlushPeriodSeconds": 2,
     "TimeoutSeconds": 5,
     "QueueCapacity": 10000
+  },
+  "Metrics": {
+    "Enabled": true,
+    "Port": 9101
   },
   "Serilog": {
     "MinimumLevel": {
@@ -539,6 +547,76 @@ C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\loki-selflog.log
 
 Пакет написан вручную. Последняя стабильная версия `Serilog.Sinks.Loki` вышла около 2020 года и тянет `Newtonsoft.Json 12.0.3` вместе с `Serilog.Sinks.Http 5.2.1` — неподдерживаемые транзитивные зависимости под Serilog 8. Свой sink использует только `HttpClient` и `System.Text.Json`, которые уже есть в проекте.
 
+### Метрики Prometheus
+
+Служба отдаёт метрики по HTTP на `/metrics`. Используется `prometheus-net 8.2.1`; `prometheus-net.AspNetCore` не подключается, потому что он потребовал бы рантайм ASP.NET Core, а `MetricServer` из ядрового пакета работает поверх `HttpListener`.
+
+Включается ключом `Metrics:Enabled`. При старте видно, что произошло:
+
+```
+[INF] Metrics endpoint listening on http://0.0.0.0:9101/metrics.
+```
+
+или, если порт поднять не удалось:
+
+```
+[ERR] Could not start the metrics endpoint on port 9101. Publishing continues without
+metrics. On Windows reserve the URL first from an elevated prompt: netsh http add urlacl
+url=http://+:9101/ user="<account>"
+```
+
+Во втором случае публикация продолжается как обычно — метрики не влияют на обработку договоров.
+
+#### Метрики
+
+| Имя | Тип | Что показывает |
+|---|---|---|
+| `asumi_producer_files_pending` | gauge | файлов в `SourcePath` на последнем сканировании |
+| `asumi_producer_files_published_total` | counter | подтверждённо опубликованных файлов |
+| `asumi_producer_files_failed_total` | counter | файлов, отброшенных из-за необработанной ошибки |
+| `asumi_producer_files_deferred_total` | counter | публикаций, отложенных из-за недоступного RabbitMQ |
+| `asumi_producer_publish_duration_seconds` | histogram | от чтения файла до подтверждения брокером |
+| `asumi_producer_rabbitmq_connected` | gauge | 1/0, состояние соединения с RabbitMQ |
+| `asumi_producer_last_publish_timestamp_seconds` | gauge | время последней подтверждённой публикации |
+| `asumi_producer_bom_warnings_total` | counter | файлов с UTF-16 BOM, ушедших байт в байт |
+
+Префикс `asumi_producer_` выбран, чтобы не пересечься с мёртвыми `asumi_*` от старого питоновского экспортёра, на который ссылается дашборд.
+
+`files_deferred_total` и `bom_warnings_total` в дашборде не использовались, но отвечают на вопросы, которые иначе видны только по логам: почему растёт `files_pending`, и сколько файлов вообще приходит в UTF-16.
+
+Границы гистограммы взяты те же, что были у старого экспортёра, чтобы панель P99 работала без правки запроса:
+
+```
+0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10
+```
+
+В хвосте гистограммы будут значения ровно на `PublishConfirmTimeoutSeconds`, потому что этим таймаутом ограничено ожидание подтверждения. Это ожидаемо, а не баг.
+
+#### Почему порт 9101, а не 9100
+
+Порт 9100 на машине разработки и на сервере занят службой ASCON Pilot (`Ascon.Pilot.WinService`). Оба процесса регистрировали в HTTP.SYS префикс `http://+:9100/`, из-за чего запросы `/metrics` обслуживал то один, то другой — какой именно, со стороны приложения не гарантировалось. Порт 9101 свободен и конфликта не создаёт.
+
+#### Резервирование URL на Windows
+
+`MetricServer` работает через `HttpListener`, и без зарезервированного URL он бросает access denied. Один раз на машине, из PowerShell **от имени администратора**:
+
+```
+netsh http add urlacl url=http://+:9101/ user="NT AUTHORITY\SYSTEM"
+```
+
+Для локального запуска под своей учёткой подставьте её имя.
+
+> **Важно:** резервировать нужно URL **с корнем**, то есть `http://+:9101/`. `MetricServer` регистрирует именно этот префикс, а резервирование в Windows покрывает ровно указанный путь — запись для `http://+:9101/metrics` прав на корень не даёт.
+
+Отдельно: порт должен быть открыт в брандмауэре Windows для адреса ВМ со стеком. Файрволом управляет не наш стек.
+
+#### Описание ключей `Metrics`
+
+| Ключ | Назначение | По умолчанию |
+|---|---|---|
+| `Enabled` | Поднимать ли эндпоинт метрик | `false` |
+| `Port` | Порт эндпоинта | `9101` |
+
 ## Управление службой
 
 | Действие | Команда |
@@ -635,6 +713,31 @@ docker logs rabbitmq --tail 30
 
 Приведите `QueueType`, `QuorumInitialGroupSize` и `MessageTtlMs` в `appsettings.json` к этим значениям. Пересоздавать очередь не нужно — объявление станет идемпотентным.
 
+### Метрики не отдаются
+
+Смотрите, что написано при старте: `Metrics endpoint listening on ...` либо `Loki sink`-подобное сообщение об отказе с указанием команды `netsh`.
+
+```powershell
+# эндпоинт отвечает?
+Invoke-WebRequest http://localhost:9101/metrics -UseBasicParsing | Select-Object -ExpandProperty Content
+
+# отвечает ли по IP, а не только по имени
+Invoke-WebRequest http://10.54.11.48:9101/metrics -UseBasicParsing
+
+# есть ли резервирование
+netsh http show urlacl | Select-String 9101
+
+# не конфликтует ли префикс с другой службой
+netsh http show servicestate | Select-String "9101" -Context 0,12
+```
+
+Типовые причины:
+
+- **не зарезервирован URL** — в логе `Could not start the metrics endpoint`, нужно выполнить `netsh http add urlacl` от администратора
+- **резервирование сделано для `/metrics` вместо корня** — поправьте на `http://+:9101/`
+- **`183 conflicts with an existing registration`** — префикс уже занят другой службой, проверьте `servicestate` и выберите свободный порт
+- **порт закрыт брандмауэром** для адреса ВМ со стеком
+
 ### Логи не появляются в Loki
 
 Проверьте, что sink вообще включился — при старте есть строка `Loki sink enabled for ...`. Если `Loki sink disabled by configuration`, проверьте `Loki:Enabled`.
@@ -685,9 +788,10 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 ### Структура кода
 
 - **`Abstractions/`** — интерфейсы: `IMessagePublisher`, `IRabbitMqConnectionProvider`, `IRabbitMqTopologyInitializer`. Только контракты, без реализации.
-- **`Configuration/`** — типизированные опции (`RabbitMqOptions`, `FilePublisherOptions`) с валидацией через DataAnnotations.
-- **`Hosting/`** — константы хоста (`ServiceConstants`).
+- **`Configuration/`** — типизированные опции (`RabbitMqOptions`, `FilePublisherOptions`, `LokiOptions`, `MetricsOptions`) с валидацией через DataAnnotations.
+- **`Hosting/`** — `ServiceConstants`, `PasswordResolver` (определяет, из какого scope окружения взят пароль).
 - **`Infrastructure/`** — реализации: подключение, публикация, объявление топологии.
+- **`Observability/`** — `LokiSink` (свой, без сторонних пакетов), `ProducerMetrics`, `MetricsServerHostedService`.
 - **`Workers/`** — `BackgroundService`-ы.
 
 ### Как добавить новый воркер
