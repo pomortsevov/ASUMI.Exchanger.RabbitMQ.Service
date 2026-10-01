@@ -2,11 +2,13 @@
 using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using ASUMI.Producer.RabbitMQ.Service.Hosting;
 using ASUMI.Producer.RabbitMQ.Service.Infrastructure;
+using ASUMI.Producer.RabbitMQ.Service.Observability;
 using ASUMI.Producer.RabbitMQ.Service.Workers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
+using Serilog.Debugging;
 using Serilog.Settings.Configuration;
 using System.Globalization;
 using System.Reflection;
@@ -40,6 +42,9 @@ public class Program
 
             // Заполняется в ConfigureServices — там PasswordResolver смотрит оба scope.
             var passwordSource = string.Empty;
+            var lokiSinkEnabled = false;
+            var lokiSinkUrl = string.Empty;
+            var lokiSinkJob = string.Empty;
 
             var host = Host.CreateDefaultBuilder(args)
                 .UseWindowsService(o => o.ServiceName = ServiceConstants.ServiceName)
@@ -55,6 +60,22 @@ public class Program
                            rollingInterval: RollingInterval.Day,
                            retainedFileCountLimit: 14,
                            shared: true);
+
+                    // Loki добавляется только если явно включён в конфиге: недоступный
+                    // Loki не должен мешать службе работать.
+                    var loki = ctx.Configuration.GetSection(LokiOptions.SectionName).Get<LokiOptions>();
+                    if (loki is { Enabled: true })
+                    {
+                        // Диагностика самого sink'а — в отдельный файл, чтобы увидеть
+                        // причины отбрасывания записей, не получая их обратно в лог.
+                        var selfLogPath = Path.Combine(AppContext.BaseDirectory, "logs", "loki-selflog.log");
+                        SelfLog.Enable(msg => { try { File.AppendAllText(selfLogPath, msg + Environment.NewLine); } catch { /* SelfLog не должен бросать */ } });
+
+                        cfg.WriteTo.Sink(new LokiSink(loki, invariant));
+                        lokiSinkEnabled = true;
+                        lokiSinkUrl = loki.Url;
+                        lokiSinkJob = loki.Job;
+                    }
                 })
                 .ConfigureServices((ctx, services) =>
                 {
@@ -97,6 +118,16 @@ public class Program
                     "visible to a process running as LocalSystem, or put Password into " +
                     "appsettings.Production.json next to the exe. Publishing will fail until then.",
                     PasswordResolver.EnvVarName);
+            }
+
+            if (lokiSinkEnabled)
+            {
+                startupLogger.LogInformation(
+                    "Loki sink enabled for {Url}, job={Job}.", lokiSinkUrl, lokiSinkJob);
+            }
+            else
+            {
+                startupLogger.LogInformation("Loki sink disabled by configuration.");
             }
 
             host.Run();
