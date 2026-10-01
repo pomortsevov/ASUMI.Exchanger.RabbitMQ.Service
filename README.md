@@ -96,7 +96,7 @@ ASUMI.Producer.RabbitMQ.Service/
 - **Для сборки**: .NET SDK 8.0.101 или новее.
 - **Для запуска**: .NET Runtime 8.0.x (`Microsoft.NETCore.App 8.0.x`).
 - **Для установки службы**: PowerShell от имени администратора.
-- **RabbitMQ**: доступный брокер (см. раздел «Запуск RabbitMQ локально»).
+- **RabbitMQ**: доступный брокер (см. раздел «Где работает RabbitMQ»).
 
 Проверить SDK и Runtime:
 
@@ -105,43 +105,64 @@ dotnet --list-sdks
 dotnet --list-runtimes
 ```
 
-## Запуск RabbitMQ локально (Docker)
+## Где работает RabbitMQ
 
-`docker-compose.yml`:
+> **Раздел переписан 01.10.2026.** Прежний вариант описывал `docker-compose.yml` из
+> этого репозитория — такого файла здесь нет, и Docker на машине разработчика не
+> установлен. Ниже то, что есть на самом деле.
 
-```yaml
-version: "2.1"
-services:
-  rabbitmq:
-    image: rabbitmq:3.10.7-management
-    hostname: rabbitmq
-    restart: always
-    environment:
-      - RABBITMQ_DEFAULT_USER=rmuser
-      - RABBITMQ_DEFAULT_PASS=rmpassword
-      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,error},{default,error}] disk_free_limit 2147483648
-    volumes:
-      - ./rabbitmq:/var/lib/rabbitmq
-    ports:
-      - 15672:15672
-      - 5672:5672
-```
+### Брокер, к которому подключается служба
 
-Запустить:
+В конфигурации по умолчанию указан **удалённый брокер `172.18.28.118:5672`** под
+учёткой `NSK-ASUMI-PRODUCER`. Локальный RabbitMQ для этих целей не используется —
+`dotnet run` тоже ходит на `172.18.28.118`, потому что `appsettings.Development.json`
+переопределяет только учётку, а `HostName` там совпадает с продовым.
+
+### Локальный брокер в WSL
+
+На машине разработчика RabbitMQ запущен **внутри WSL** (`Ubuntu-22.04`), а Docker
+работает уже внутри этой дистрибутивы. На Windows команды `docker` нет.
 
 ```powershell
-docker compose up -d
+# контейнеры видны только из WSL
+wsl -e sh -c "docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}'" | Select-String rabbitmq
 ```
 
-Проверить:
+Фактическое состояние стека:
+
+| Параметр | Значение |
+|---|---|
+| Дистрибутив WSL | `Ubuntu-22.04` |
+| Compose-проект | `monitoring` |
+| Контейнер с AMQP наружу | `monitoring_rabbitmq_1` |
+| Образ | `rabbitmq:4.3.6-management` |
+| Порты | `0.0.0.0:5672` → AMQP, `127.0.0.1:15672` → Management |
+| Кластер | также есть `monitoring_rabbitmq_2` и `monitoring_rabbitmq_3`, наружу не проброшены |
+
+Порт наружу пробрасывает `wslrelay`, поэтому из Windows `localhost` работает без
+дополнительных настроек:
 
 ```powershell
-docker ps --filter "name=rabbitmq"
 Test-NetConnection localhost -Port 5672
 Test-NetConnection localhost -Port 15672
 ```
 
-Management UI: http://localhost:15672, логин `rmuser`, пароль `rmpassword`.
+Management UI: <http://localhost:15672>. Учётные данные брокера — `rmuser` / `rmpassword`.
+
+### Инфраструктура — в отдельном репозитории
+
+Стек целиком, включая compose-файлы, живёт **не здесь**. Им управляет репозиторий
+[`RabbitMQ.Consumer.PilotICE.Infra`](https://github.com/pomortsevov/RabbitMQ.Consumer.PilotICE.Infra)
+(приватный, нужен доступ):
+
+- compose-проект `monitoring` с RabbitMQ, Loki, Prometheus, Grafana, Alloy, Keycloak и остальным;
+- `prometheus/targets/` — список целей для скрейпа, подхватывается каждые 30 секунд;
+- `ansible/inventory/group_vars/all.yml` — список целей, включая нашу
+  (`external_scrape_targets`, job `asumi_producer`).
+
+Править compose руками здесь нечего и не нужно: изменения в стеке делаются там.
+
+Если стек не поднят, разворачивать его следует в том репозитории, а не в этом.
 
 ## Локальный запуск (консоль)
 
@@ -692,8 +713,8 @@ Get-EventLog -LogName Application -Source "ASUMI Producer RabbitMQ Service" -New
 
 ```powershell
 Test-NetConnection localhost -Port 5672
-docker ps --filter "name=rabbitmq"
-docker logs rabbitmq --tail 30
+wsl -e sh -c "docker ps --filter name=rabbitmq"
+wsl -e sh -c "docker logs monitoring_rabbitmq_1 --tail 30"
 ```
 
 ### RabbitMQ не принимает сообщения
