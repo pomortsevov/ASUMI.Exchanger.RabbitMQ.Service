@@ -65,7 +65,13 @@ internal sealed class LokiSink : ILogEventSink, IDisposable
         _formatter = new MessageTemplateTextFormatter(
             // level= в начале строки нужен, чтобы Loki сам определил уровень и положил
             // запись в метку detected_level, а не в unknown.
-            "level={Level:u3} {Message:lj} {Properties:j}",
+            //
+            // msg={Message:j} — двоеточие j рендерит сообщение как JSON-строку, то есть
+            // С КАВЫЧКАМИ и с экранированием. Без кавычек строка вида
+            // "level=ERR Moved Fail-!! Z_....json to failed: ..." не разбирается
+            // logfmt-парсером: имена файлов АСУМИ с пробелами выглядят как начало
+            // новых полей, и запись в Grafana распадается.
+            "level={Level:u3} msg={Message:j} {Properties:j}",
             formatProvider);
 
         _labels = BuildLabels(options);
