@@ -74,6 +74,14 @@ public sealed class RabbitMqOptions
     [Range(1, 300)]
     public int ReconnectIntervalSeconds { get; set; } = 5;
 
+    /// <summary>
+    /// Как часто повторно писать предупреждение о недоступном брокере, пока он лежит.
+    /// Первая неудача логируется всегда, дальше — не чаще этого интервала, остальное
+    /// уходит в Debug и в Loki не попадает.
+    /// </summary>
+    [Range(10, 3600)]
+    public int RepeatWarningIntervalSeconds { get; set; } = 300;
+
     [Required]
     public string ConnectionName { get; set; } = "ASUMI.Producer.RabbitMQ.Service";
 }

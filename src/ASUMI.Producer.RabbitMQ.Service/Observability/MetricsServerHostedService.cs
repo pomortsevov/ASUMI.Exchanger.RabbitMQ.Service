@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -35,6 +37,24 @@ public sealed class MetricsServerHostedService : IHostedService, IDisposable
             return Task.CompletedTask;
         }
 
+        // Проверяем порт заранее. Иначе конфликт выглядит как невнятное
+        // HttpListenerException (183), из которого не видно, что виноват второй
+        // экземпляр этой же службы. На проде такого не бывает, на машине
+        // разработчика — регулярно, когда запущены и VS, и консольный экземпляр.
+        if (!IsPortAvailable(_options.Port))
+        {
+            var ownerHint =
+                $"Get-NetTCPConnection -LocalPort {_options.Port} -State Listen | Select-Object OwningProcess";
+
+            _logger.LogError(
+                "Port {Port} is already in use, metrics endpoint not started. Most likely another " +
+                "instance of this service is running, which would also publish contracts twice. " +
+                "Find it with: {OwnerHint}, then either stop it or change Metrics:Port. " +
+                "Publishing continues without metrics.",
+                _options.Port, ownerHint);
+            return Task.CompletedTask;
+        }
+
         try
         {
             _server = new MetricServer(port: _options.Port);
@@ -63,6 +83,29 @@ public sealed class MetricsServerHostedService : IHostedService, IDisposable
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Пытается занять порт и сразу освобождает. Порт остаётся за нами, но так можно
+    /// узнать заранее, что он уже кем-то занят, не дожидаясь исключения от HttpListener.
+    /// </summary>
+    private static bool IsPortAvailable(int port)
+    {
+        TcpListener? probe = null;
+        try
+        {
+            probe = new TcpListener(IPAddress.Any, port);
+            probe.Start();
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+        finally
+        {
+            probe?.Stop();
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken)

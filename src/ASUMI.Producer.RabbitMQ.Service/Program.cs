@@ -40,6 +40,23 @@ public class Program
 
             Log.Information("Starting {ServiceName} v{Version}...", ServiceConstants.ServiceName, version);
 
+            // Один экземпляр на машину. Два процесса сканируют SourcePath параллельно и
+            // могут опубликовать один договор дважды. На проде это исключено самой SCM,
+            // а на машине разработчика легко получить, запустив службу и F5 одновременно.
+            // Global\, а не Local\, иначе служба в сессии 0 и консольный экземпляр
+            // не увидят друг друга.
+            using var instanceMutex = new Mutex(
+                initiallyOwned: true, $"Global\\{ServiceConstants.ServiceName}", out var isFirstInstance);
+
+            if (!isFirstInstance)
+            {
+                Log.Fatal(
+                    "Another instance of {ServiceName} is already running on this machine. " +
+                    "Two instances would publish the same contract twice. Stop the running one first.",
+                    ServiceConstants.ServiceName);
+                return 2;
+            }
+
             // Заполняется в ConfigureServices — там PasswordResolver смотрит оба scope.
             var passwordSource = string.Empty;
             var lokiSinkEnabled = false;

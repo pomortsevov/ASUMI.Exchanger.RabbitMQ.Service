@@ -16,6 +16,12 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
     private IConnection? _connection;
     private bool _disposed;
 
+    /// <summary>Счётчик неудачных попыток подряд: сбрасывается при успешном подключении.</summary>
+    private int _consecutiveFailures;
+
+    /// <summary>Когда последний раз писали предупреждение о неудаче.</summary>
+    private DateTime _lastFailureWarningUtc = DateTime.MinValue;
+
     public RabbitMqConnectionProvider(
         ILogger<RabbitMqConnectionProvider> logger,
         IOptions<RabbitMqOptions> options)
@@ -93,7 +99,9 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
 
             try
             {
-                _logger.LogInformation(
+                // Debug, а не Information: попытка сама по себе ничего не значит, исход
+                // логируется отдельно. При недоступном брокере это 288 лишних строк в час.
+                _logger.LogDebug(
                     "Attempting to connect to RabbitMQ at {Host}:{Port}{VHost} as {User}...",
                     _options.HostName, _options.Port, _options.VirtualHost, _options.UserName);
 
@@ -111,17 +119,38 @@ public sealed class RabbitMqConnectionProvider : IRabbitMqConnectionProvider
 
                 _connection = connection;
                 ProducerMetrics.RabbitMqConnected.Set(1);
+                _consecutiveFailures = 0;
                 _logger.LogInformation("Connected to RabbitMQ. ConnectionName={ConnectionName}", _options.ConnectionName);
             }
             catch (Exception ex)
             {
                 ProducerMetrics.RabbitMqConnected.Set(0);
+                _consecutiveFailures++;
+
+                // Повторяющиеся неудачи не пишем на уровне Warning: иначе при аварии
+                // брокера лог засоряется двумя строками раз в пять секунд. Предупреждение
+                // уходит на первой неудаче и затем не чаще раза в
+                // RepeatWarningIntervalSeconds, а счётчик неудач виден в сообщении.
+                var repeatInterval = TimeSpan.FromSeconds(_options.RepeatWarningIntervalSeconds);
+                var shouldWarn = _consecutiveFailures == 1 ||
+                                 (DateTime.UtcNow - _lastFailureWarningUtc) >= repeatInterval;
 
                 // Пишем только тип и сообщение без стектрейса — иначе лог засоряется при недоступном RabbitMQ.
-                _logger.LogWarning(
-                    "Could not connect to RabbitMQ at {Host}:{Port}{VHost} ({ExceptionType}): {Message}. Will retry in {RetryInterval}s.",
-                    _options.HostName, _options.Port, _options.VirtualHost,
-                    ex.GetType().Name, ex.Message, _options.ReconnectIntervalSeconds);
+                if (shouldWarn)
+                {
+                    _lastFailureWarningUtc = DateTime.UtcNow;
+                    _logger.LogWarning(
+                        "Could not connect to RabbitMQ at {Host}:{Port}{VHost} ({ExceptionType}): {Message}. " +
+                        "Will retry in {RetryInterval}s. Consecutive failures: {Failures}.",
+                        _options.HostName, _options.Port, _options.VirtualHost,
+                        ex.GetType().Name, ex.Message, _options.ReconnectIntervalSeconds, _consecutiveFailures);
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "Could not connect to RabbitMQ ({ExceptionType}): {Message}. Consecutive failures: {Failures}.",
+                        ex.GetType().Name, ex.Message, _consecutiveFailures);
+                }
             }
         }
         finally
