@@ -23,10 +23,6 @@ public static class ProducerMetrics
         "asumi_producer_files_published_total",
         "Files confirmed published to RabbitMQ.");
 
-    public static readonly Counter FilesFailed = Metrics.CreateCounter(
-        "asumi_producer_files_failed_total",
-        "Files abandoned after an unhandled error.");
-
     public static readonly Counter FilesDeferred = Metrics.CreateCounter(
         "asumi_producer_files_deferred_total",
         "Publications skipped because RabbitMQ was unavailable; the file is retried next cycle.");
@@ -39,6 +35,18 @@ public static class ProducerMetrics
     public static readonly Counter FilesUnexpectedEncoding = Metrics.CreateCounter(
         "asumi_producer_files_unexpected_encoding_total",
         "Files without the expected UTF-16 BOM, published byte-for-byte to a UTF-16 consumer.");
+
+    /// <summary>
+    /// Файлы, которые не попали в очередь. Причина в метке reason:
+    /// <c>invalid_json</c> — не разбирается как JSON, ушёл в FailedPath;
+    /// <c>unexpected_error</c> — необработанное исключение при обработке.
+    /// Без метки это две несвязанные величины, из-за чего files_failed_total
+    /// показывал ноль при непустой папке FailedPath.
+    /// </summary>
+    public static readonly Counter FilesFailed = Metrics.CreateCounter(
+        "asumi_producer_files_failed_total",
+        "Files that were not published to RabbitMQ, by reason.",
+        new CounterConfiguration { LabelNames = new[] { "reason" } });
 
     public static readonly Histogram PublishDuration = Metrics.CreateHistogram(
         "asumi_producer_publish_duration_seconds",

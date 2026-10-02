@@ -1,6 +1,7 @@
 using ASUMI.Producer.RabbitMQ.Service.Abstractions;
 using ASUMI.Producer.RabbitMQ.Service.Configuration;
 using ASUMI.Producer.RabbitMQ.Service.Observability;
+using ASUMI.Producer.RabbitMQ.Service.Validation;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -36,22 +37,24 @@ public sealed class FilePublisherWorker : BackgroundService
         }
 
         _logger.LogInformation(
-            "FilePublisherWorker starting. Source={Source}, Processed={Processed}, Mask={Mask}, Interval={Interval}s",
-            _options.SourcePath, _options.ProcessedPath, _options.FileMask, _options.PollIntervalSeconds);
+            "FilePublisherWorker starting. Source={Source}, Processed={Processed}, Failed={Failed}, Mask={Mask}, Interval={Interval}s",
+            _options.SourcePath, _options.ProcessedPath, _options.FailedPath, _options.FileMask, _options.PollIntervalSeconds);
 
         // Гарантируем существование папок
         Directory.CreateDirectory(_options.SourcePath);
         Directory.CreateDirectory(_options.ProcessedPath);
+        Directory.CreateDirectory(_options.FailedPath);
 
         var inputDir = new DirectoryInfo(_options.SourcePath);
         var outputDir = new DirectoryInfo(_options.ProcessedPath);
+        var failedDir = new DirectoryInfo(_options.FailedPath);
         var interval = TimeSpan.FromSeconds(_options.PollIntervalSeconds);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await ProcessOnceAsync(inputDir, outputDir, stoppingToken);
+                await ProcessOnceAsync(inputDir, outputDir, failedDir, stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -80,6 +83,7 @@ public sealed class FilePublisherWorker : BackgroundService
     private async Task ProcessOnceAsync(
         DirectoryInfo inputDir,
         DirectoryInfo outputDir,
+        DirectoryInfo failedDir,
         CancellationToken stoppingToken)
     {
         var files = inputDir.GetFiles(_options.FileMask);
@@ -100,7 +104,7 @@ public sealed class FilePublisherWorker : BackgroundService
 
             try
             {
-                await ProcessFileAsync(fi, outputDir, stoppingToken);
+                await ProcessFileAsync(fi, outputDir, failedDir, stoppingToken);
             }
             catch (IOException ioEx)
             {
@@ -111,7 +115,7 @@ public sealed class FilePublisherWorker : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to process {File}.", fi.Name);
-                ProducerMetrics.FilesFailed.Inc();
+                ProducerMetrics.FilesFailed.WithLabels("unexpected_error").Inc();
             }
         }
     }
@@ -119,6 +123,7 @@ public sealed class FilePublisherWorker : BackgroundService
     private async Task ProcessFileAsync(
         FileInfo fi,
         DirectoryInfo outputDir,
+        DirectoryInfo failedDir,
         CancellationToken stoppingToken)
     {
         // 1. Прочитать содержимое В СЫРЫХ БАЙТАХ.
@@ -135,7 +140,23 @@ public sealed class FilePublisherWorker : BackgroundService
 
         CheckForUnexpectedEncoding(fi.Name, body);
 
-        // 2. Публикация в RabbitMQ.
+        // 2. Проверка JSON. Байты в RabbitMQ уходят без изменений, проверяется копия.
+        // Файл, который consumer не осилит, в очередь не попадает — иначе он там упадёт.
+        if (!JsonValidator.IsValidJson(body, out var parseError))
+        {
+            ProducerMetrics.FilesFailed.WithLabels("invalid_json").Inc();
+
+            var failedName = $"{Path.GetFileNameWithoutExtension(fi.Name)}-" +
+                             $"{DateTime.Now:yyyyMMdd-HHmmssfff}{fi.Extension}";
+            File.Move(fi.FullName, Path.Combine(failedDir.FullName, failedName), overwrite: true);
+
+            _logger.LogError(
+                "Moved {File} to failed: not valid JSON ({Reason}). File: {FailedFile}",
+                fi.Name, parseError, failedName);
+            return;
+        }
+
+        // 3. Публикация в RabbitMQ.
         // Если публикация не удалась — НЕ перемещаем и НЕ удаляем файл: вернёмся к нему на следующем цикле.
         var published = await _publisher.PublishAsync(body, stoppingToken);
         if (!published)

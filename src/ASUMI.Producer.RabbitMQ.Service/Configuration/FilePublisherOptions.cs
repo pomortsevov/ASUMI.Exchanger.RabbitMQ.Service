@@ -17,6 +17,13 @@ public sealed class FilePublisherOptions
     [Required]
     public string ProcessedPath { get; set; } = "C:\\ProcessedJson";
 
+    /// <summary>
+    /// Папка для файлов, которые не разбираются как JSON. Из очереди они исключены,
+    /// но и не удаляются — остаются для разбора.
+    /// </summary>
+    [Required]
+    public string FailedPath { get; set; } = "C:\\FailedJson";
+
     /// <summary>Маска файлов для обработки.</summary>
     [Required]
     public string FileMask { get; set; } = "*.json";
