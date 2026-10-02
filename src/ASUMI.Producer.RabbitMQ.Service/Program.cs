@@ -69,6 +69,7 @@ public class Program
                 {
                     cfg.ReadFrom.Configuration(ctx.Configuration, new ConfigurationReaderOptions())
                        .Enrich.FromLogContext()
+                       .Enrich.With(new LogCategoryEnricher())
                        .Enrich.WithProperty("Service", ServiceConstants.ServiceName)
                        .WriteTo.Console(formatProvider: invariant)
                        .WriteTo.File(
@@ -88,7 +89,7 @@ public class Program
                         var selfLogPath = Path.Combine(AppContext.BaseDirectory, "logs", "loki-selflog.log");
                         SelfLog.Enable(msg => { try { File.AppendAllText(selfLogPath, msg + Environment.NewLine); } catch { /* SelfLog не должен бросать */ } });
 
-                        cfg.WriteTo.Sink(new LokiSink(loki, invariant));
+                        cfg.WriteTo.Sink(new LokiSink(loki));
                         lokiSinkEnabled = true;
                         lokiSinkUrl = loki.Url;
                         lokiSinkJob = loki.Job;

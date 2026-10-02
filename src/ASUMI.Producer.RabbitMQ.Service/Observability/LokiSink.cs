@@ -32,8 +32,7 @@ internal sealed class LokiSink : ILogEventSink, IDisposable
     private readonly ConcurrentQueue<string> _queue = new();
     private readonly LokiOptions _options;
     private readonly HttpClient _http;
-    private readonly MessageTemplateTextFormatter _formatter;
-    private readonly IFormatProvider _formatProvider;
+    private readonly LokiLogFormatter _formatter;
     private readonly Dictionary<string, string> _labels;
     private readonly SemaphoreSlim _flushGate = new(1, 1);
     private readonly Timer _timer;
@@ -43,10 +42,9 @@ internal sealed class LokiSink : ILogEventSink, IDisposable
     private long _failedBatches;
     private bool _disposed;
 
-    public LokiSink(LokiOptions options, IFormatProvider formatProvider, LogEventLevel minimumLevel = LogEventLevel.Information)
+    public LokiSink(LokiOptions options, LogEventLevel minimumLevel = LogEventLevel.Information)
     {
         _options = options;
-        _formatProvider = formatProvider;
         _minimumLevel = minimumLevel;
 
         _http = new HttpClient
@@ -62,17 +60,7 @@ internal sealed class LokiSink : ILogEventSink, IDisposable
                 new AuthenticationHeaderValue("Bearer", options.ApiKey);
         }
 
-        _formatter = new MessageTemplateTextFormatter(
-            // level= в начале строки нужен, чтобы Loki сам определил уровень и положил
-            // запись в метку detected_level, а не в unknown.
-            //
-            // msg={Message:j} — двоеточие j рендерит сообщение как JSON-строку, то есть
-            // С КАВЫЧКАМИ и с экранированием. Без кавычек строка вида
-            // "level=ERR Moved Fail-!! Z_....json to failed: ..." не разбирается
-            // logfmt-парсером: имена файлов АСУМИ с пробелами выглядят как начало
-            // новых полей, и запись в Grafana распадается.
-            "level={Level:u3} msg={Message:j} {Properties:j}",
-            formatProvider);
+        _formatter = new LokiLogFormatter();
 
         _labels = BuildLabels(options);
 
