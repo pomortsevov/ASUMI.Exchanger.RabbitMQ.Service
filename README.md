@@ -39,14 +39,21 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
                                                                      │  Consumer  │
                                                                      │  МИТ       │
                                                                      └────────────┘
+
+                          не разобрался как JSON
+                   ┌─────────────────────┐
+                   │     FailedPath      │
+                   │   (ошибка JSON)     │
+                   └─────────────────────┘
 ```
 
 1. АСУМИ кладёт `*.json` в `SourcePath`.
 2. Служба раз в `PollIntervalSeconds` сканирует папку.
-3. Для каждого файла: читает → публикует в `asumi.exchange` с routing key `asumi.json` → перемещает в `ProcessedPath` → удаляет исходник.
-4. **Если RabbitMQ недоступен** — файл остаётся в `SourcePath`, попытка повторяется на следующем цикле. Ничего не теряется.
-5. Публикация считается успешной только после **подтверждения от брокера** (publisher confirms). Если для routing key нет привязки, брокер возвращает сообщение, `PublishAsync` возвращает `false`, и файл остаётся в `SourcePath`. Успешного лога при потерянном сообщении быть не может.
-6. Сообщения лежат в `asumi.queue` до 5 минут (TTL) или до тех пор, пока их не заберёт consumer.
+3. Для каждого файла: читает → **проверяет JSON на копии** → публикует байты в `asumi.exchange` с routing key `asumi.json` → перемещает в `ProcessedPath`.
+4. **Если файл не разбирается как JSON** — переносится в `FailedPath` и в очередь не идёт. Подробности в разделе «Папка `FailedPath`».
+5. **Если RabbitMQ недоступен** — файл остаётся в `SourcePath`, попытка повторяется на следующем цикле. Ничего не теряется.
+6. Публикация считается успешной только после **подтверждения от брокера** (publisher confirms). Если для routing key нет привязки, брокер возвращает сообщение, `PublishAsync` возвращает `false`, и файл остаётся в `SourcePath`. Успешного лога при потерянном сообщении быть не может.
+7. Сообщения лежат в `asumi.queue` до 5 минут (TTL) или до тех пор, пока их не заберёт consumer.
 
 > **Кодировка.** Файлы АСУМИ приходят в **UTF-16LE**. Служба отправляет их в RabbitMQ **байт в байт**, без перекодирования. Consumer обязан читать UTF-16 — если он рассчитан на UTF-8, сообщения не разберутся. Служба пишет предупреждение, только если встретила файл **без** UTF-16 BOM, то есть об отклонении от ожидаемого формата.
 
@@ -84,9 +91,14 @@ ASUMI.Producer.RabbitMQ.Service/
         │   ├── RabbitMqTopologyHostedService.cs
         │   └── RabbitMqTopologyInitializer.cs
         ├── Observability/
+        │   ├── LokiLogFormatter.cs
         │   ├── LokiSink.cs
+        │   ├── LogCategories.cs
+        │   ├── LogValueText.cs
         │   ├── MetricsServerHostedService.cs
         │   └── ProducerMetrics.cs
+        ├── Validation/
+        │   └── JsonValidator.cs
         └── Workers/
             └── FilePublisherWorker.cs
 ```
@@ -197,10 +209,16 @@ dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 [15:52:05 INF] Queue declared: asumi.queue (durable, type=quorum, TTL=300000ms)
 [15:52:05 INF] Queue bound: asumi.queue -> asumi.exchange (routingKey=asumi.json)
 [15:52:05 INF] RabbitMQ topology is ready.
-[15:52:05 INF] FilePublisherWorker starting. Source=C:\SourceJson, Processed=C:\ProcessedJson, Mask=*.json, Interval=10s
+[15:52:05 INF] FilePublisherWorker starting. Source=C:\SourceJson, Processed=C:\ProcessedJson, Failed=C:\FailedJson, Mask=*.json, Interval=10s
 [15:52:15 INF] Read Z_25.01.22_13-42__d.ID-12_b.ID-.json (1475 bytes).
 [15:52:15 INF] Published Z_25.01.22_13-42__d.ID-12_b.ID-.json (1475 bytes) to exchange asumi.exchange with routingKey asumi.json.
 [15:52:15 INF] Moved to processed: Z_25.01.22_13-42__d.ID-12_b.ID--20260921-155215341.json
+```
+
+При битом контракте вместо публикации будет перенос в `FailedPath`:
+
+```
+[15:52:15 ERR] Moved 1!! Z_25.01.22.json to failed: not valid JSON ('q' is invalid after starting a string).
 ```
 
 Ожидаемый вывод при **недоступном** RabbitMQ (служба не падает):
@@ -209,10 +227,10 @@ dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 [15:54:00 INF] Declaring RabbitMQ topology...
 [15:54:00 INF] Attempting to connect to RabbitMQ at 172.18.28.118:5672/ as NSK-ASUMI-PRODUCER...
 [15:54:04 WRN] Could not connect to RabbitMQ at 172.18.28.118:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
-[15:54:09 INF] Attempting to connect to RabbitMQ at 172.18.28.118:5672/ as NSK-ASUMI-PRODUCER...
-[15:54:13 WRN] Could not connect to RabbitMQ at 172.18.28.118:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
 ...
 ```
+
+Повторяющиеся попытки печатаются с ограничением частоты, иначе при лежащем брокере каждая строка уходила бы в Loki по пять раз в секунду. Интервал между попытками от этого не меняется.
 
 Как только RabbitMQ поднимется — служба автоматически подключится и продолжит работу:
 
@@ -323,6 +341,7 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
     "Enabled": true,
     "SourcePath": "C:\\SourceJson",
     "ProcessedPath": "C:\\ProcessedJson",
+    "FailedPath": "C:\\FailedJson",
     "FileMask": "*.json",
     "PollIntervalSeconds": 10
   },
@@ -374,7 +393,10 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 | `AutomaticRecovery` | Авто-восстановление соединения клиентом | `true` |
 | `NetworkRecoveryIntervalSeconds` | Интервал авто-восстановления (после разрыва) | `10` |
 | `ReconnectIntervalSeconds` | Интервал попыток при первом подключении | `5` |
+| `RepeatWarningIntervalSeconds` | Как часто повторяется сообщение об одной и той же ошибке | `300` |
 | `ConnectionName` | Имя соединения в UI RabbitMQ | `ASUMI.Producer.RabbitMQ.Service` |
+
+`RepeatWarningIntervalSeconds` ограничивает только частоту записи повторяющейся ошибки в лог. Интервал между попытками переподключения он не меняет, и задержки на восстановление не добавляет — нужен, чтобы лежащий брокер не заваливал Loki одинаковыми строками. Внутри сообщения видно число подряд идущих неудач.
 
 ### Описание ключей `FilePublisher`
 
@@ -383,6 +405,7 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 | `Enabled` | Включён ли воркер | `true` |
 | `SourcePath` | Папка, откуда читаются `*.json` | `C:\SourceJson` |
 | `ProcessedPath` | Папка для успешно опубликованных файлов | `C:\ProcessedJson` |
+| `FailedPath` | Папка для файлов, которые не разобрались как JSON | `C:\FailedJson` |
 | `FileMask` | Маска файлов | `*.json` |
 | `PollIntervalSeconds` | Интервал сканирования папки | `10` |
 
@@ -536,6 +559,34 @@ Loki сам проставляет `detected_level`, потому что стр�
 
 > **Внимание, имена меток.** В этом Loki уже заняты `service=asumi-producer` и `service=asumi_exporter` — они принадлежат другим компонентам АСУМИ. Если занять то же имя, записи сольются с чужими и в Grafana получится каша. Своё имя держите отличным от соседних.
 
+#### Формат строки
+
+Запись выводится в logfmt с полями `level`, `cat` и `msg`:
+
+```
+level=ERR cat="system" msg=Could not connect to RabbitMQ at "172.18.28.118":5672. {"SourceContext":"...RabbitMqConnectionProvider","cat":"system"}
+level=ERR cat="data" msg=Moved "Fail-!! Z_x.json" to failed: not valid JSON ("'q' is invalid"). {...}
+```
+
+Сообщение заключено в кавычки: имена файлов АСУМИ содержат пробелы, и без кавычек logfmt-парсер принимал бы их за начало новых полей, из-за чего запись в Grafana распадалась.
+
+#### Фильтрация по категории
+
+```logql
+{job="ASUMI.Producer.RabbitMQ.Service"} | cat="system"
+{job="ASUMI.Producer.RabbitMQ.Service"} | cat="data" | level="ERR"
+```
+
+| Категория | Что попадает |
+|---|---|
+| `system` | подключение к брокеру, топология, метрики, порты |
+| `data` | сканирование папки, чтение файлов, публикация |
+| `config` | запуск, источник пароля, включение сендоров |
+
+Категория выводится из `SourceContext` обогатителем, а не указывается в каждом вызове `LogXxx`. Ни одно существующее место логирования не тронуто, а новая категория начинает работать сама — правится только список классов в `LogCategoryEnricher`. Неизвестный источник попадает в `system`, чтобы записи не пропадали из фильтра.
+
+Поле `cat` дублируется в JSON-хвосте. Убрать его оттуда можно было бы только изменением объекта события, а он общий для всех сенков.
+
 #### Описание ключей `Loki`
 
 | Ключ | Назначение | По умолчанию |
@@ -594,12 +645,21 @@ url=http://+:9101/ user="<account>"
 |---|---|---|
 | `asumi_producer_files_pending` | gauge | файлов в `SourcePath` на последнем сканировании |
 | `asumi_producer_files_published_total` | counter | подтверждённо опубликованных файлов |
-| `asumi_producer_files_failed_total` | counter | файлов, отброшенных из-за необработанной ошибки |
+| `asumi_producer_files_failed_total` | counter | файлов, не попавших в очередь, с меткой `reason` |
 | `asumi_producer_files_deferred_total` | counter | публикаций, отложенных из-за недоступного RabbitMQ |
 | `asumi_producer_publish_duration_seconds` | histogram | от чтения файла до подтверждения брокером |
 | `asumi_producer_rabbitmq_connected` | gauge | 1/0, состояние соединения с RabbitMQ |
 | `asumi_producer_last_publish_timestamp_seconds` | gauge | время последней подтверждённой публикации |
 | `asumi_producer_files_unexpected_encoding_total` | counter | файлов без ожидаемого UTF-16 BOM |
+
+У `asumi_producer_files_failed_total` есть метка `reason`:
+
+| Значение | Когда |
+|---|---|
+| `invalid_json` | файл не разобрался как JSON, ушёл в `FailedPath` |
+| `unexpected_error` | необработанное исключение при обработке файла |
+
+Имя метрики сохранено прежним, потому что на него завязаны существующие запросы и панели.
 
 Префикс `asumi_producer_` выбран, чтобы не пересечься с мёртвыми `asumi_*` от старого питоновского экспортёра, на который ссылается дашборд.
 
@@ -651,6 +711,37 @@ netsh http add urlacl url=http://+:9101/ user="NT AUTHORITY\SYSTEM"
 | `Enabled` | Поднимать ли эндпоинт метрик | `false` |
 | `Port` | Порт эндпоинта | `9101` |
 
+## Папка `FailedPath`
+
+Файлы, которые не разобрались как JSON, не уходят в очередь и не удаляются — они переносятся в `FailedPath` (по умолчанию `C:\FailedJson`) и остаются там для разбора. Служба не пытается их перечитывать: файл в `FailedPath` для неё не существует.
+
+### Что считается сломанным
+
+Перед публикацией файл читается побайтово и проверяется на **копии** — в очередь уходят байты оригинала без изменений. Проверка снимает BOM и разбирает документ с `JsonCommentHandling.Skip`.
+
+Комментарии в контрактах АСУМИ норма, а не признак поломки: `//` встречается в 44 файлах из 277. Строгий парсер отверг бы 16% контрактов, поэтому используется снисходительный.
+
+### Асимметрия ошибок
+
+| Что случилось | Что делает служба |
+|---|---|
+| Файл не разбирается | Переносится в `FailedPath`, `files_failed_total{reason="invalid_json"}` |
+| Проверяющий бросил исключение | Файл публикуется, `files_failed_total{reason="unexpected_error"}` |
+
+Вторая строка важна: ошибка в самом валидаторе не должна приводить к потере контрактов. Лучше отдать в очередь файл, который, возможно, битый, чем похоронить нормальный.
+
+### Метрика
+
+```promql
+sum by (reason) (rate(asumi_producer_files_failed_total[15m]))
+```
+
+### Известная проблема АСУМИ
+
+Файлы с префиксом `1!!` на 8 из 8 проверенных оказались некорректными: после закрытия первого массива объект не закрывается, и следом идёт повторный ключ `"JsonDogSUB"`. Это дефект шаблона на стороне отправителя, а не службы. Такие файлы оседают в `FailedPath` — разбирать их нужно с разработчиками АСУМИ.
+
+Второй известный дефект: ключ `DatеStatys_SUB` в контрактах написан с кириллической `е` (U+0435). Привязка в consumer на `DateStatys_SUB` молча получает `null`.
+
 ## Управление службой
 
 | Действие | Команда |
@@ -699,13 +790,17 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 Get-EventLog -LogName Application -Source "ASUMI Producer RabbitMQ Service" -Newest 10 -ErrorAction SilentlyContinue | Format-List TimeGenerated, EntryType, Message
 ```
 
+Если в логе `Another instance ... is already running` — процесс уже есть. Служба и консольный `dotnet run` не должны работать одновременно: два экземпляра опубликовали бы один контракт дважды. Mutex именованный и глобальный (`Global\`), поэтому он виден и службе в сессии 0, и запуску из сессии пользователя. Проверка:
+
+```powershell
+Get-Process -Name "ASUMI.Producer.RabbitMQ.Service" -ErrorAction SilentlyContinue
+```
+
 ### RabbitMQ недоступен
 
-Это **нормальный сценарий** — служба не падает, а ждёт подключения. В логе раз в 5 секунд:
+Это **нормальный сценарий** — служба не падает, а ждёт подключения. В логе повторяется сообщение `Could not connect to RabbitMQ ... Will retry in 5s`.
 
-```
-[15:54:04 WRN] Could not connect to RabbitMQ at localhost:5672/ (BrokerUnreachableException): None of the specified endpoints were reachable. Will retry in 5s.
-```
+Ошибки подключения идут с полем `cat="system"`, поэтому в Loki находятся запросом `{job="ASUMI.Producer.RabbitMQ.Service"} | cat="system" | level="ERR"`.
 
 Как только RabbitMQ поднимется — в логе появится `Connected to RabbitMQ`, и служба продолжит работу. Файлы в `SourcePath` **не теряются** — они будут опубликованы после восстановления соединения.
 
@@ -724,6 +819,22 @@ wsl -e sh -c "docker logs monitoring_rabbitmq_1 --tail 30"
 - **Exchanges** → `asumi.exchange` существует, тип `topic`.
 - **Queues** → `asumi.queue` существует, привязана к `asumi.exchange` с routing key `asumi.json`.
 - **Queues** → `asumi.queue` → **Message rates** — есть ли публикации.
+
+### В папке `FailedPath` появились файлы
+
+Смотрите в логи записи с `cat="data"`: в сообщении о переносе указан файл и причина.
+
+```logql
+{job="ASUMI.Producer.RabbitMQ.Service"} | cat="data" | level="ERR"
+```
+
+Счётчик с разбивкой по причинам:
+
+```promql
+sum by (reason) (asumi_producer_files_failed_total)
+```
+
+Пока в папке лежат файлы, служба их не читает и в очередь они не идут. Разбор — за разработчиками АСУМИ: текущая маска `*.json` специально оставлена узкой, иначе в очередь попадал бы мусор вроде `backup.json.old.tmp`.
 
 ### Сообщения исчезают из очереди через 5 минут
 
@@ -803,7 +914,15 @@ Invoke-RestMethod http://172.18.28.118:3100/ready
 ls C:\Services\ASUMI.Producer.RabbitMQ.Service\logs
 ```
 
+Если записи не находятся запросом `| cat="system"`, посмотрите сырую строку: `{job="ASUMI.Producer.RabbitMQ.Service"}` без фильтра по `cat`.
+
 ## Разработка
+
+### Проверка формата логов
+
+Служба не запустится, если уже работает другой экземпляр, — mutex не обойти. Формат вывода удобнее проверять изолированно, без запуска службы: скопировать `LokiLogFormatter.cs`, `LogCategories.cs` и `LogValueText.cs` в одноразовый проект с пакетом `Serilog`, собрать логгер с sink'ом, который печатает результат, и прогнать несколько записей с разными `SourceContext`.
+
+Так были найдены две ошибки, незаметные при чистой сборке: `ScalarValue.ToString()` возвращает значение вместе с кавычками, из-за чего сопоставление категорий не работало, и ручная сборка JSON-хвоста ломала составные значения свойств.
 
 ### Сборка
 
@@ -825,7 +944,8 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 - **`Configuration/`** — типизированные опции (`RabbitMqOptions`, `FilePublisherOptions`, `LokiOptions`, `MetricsOptions`) с валидацией через DataAnnotations.
 - **`Hosting/`** — `ServiceConstants`, `PasswordResolver` (определяет, из какого scope окружения взят пароль).
 - **`Infrastructure/`** — реализации: подключение, публикация, объявление топологии.
-- **`Observability/`** — `LokiSink` (свой, без сторонних пакетов), `ProducerMetrics`, `MetricsServerHostedService`.
+- **`Observability/`** — `LokiSink` (свой, без сторонних пакетов), `LokiLogFormatter` и `LogCategories` (категория записи как поле `cat`), `LogValueText`, `ProducerMetrics`, `MetricsServerHostedService`.
+- **`Validation/`** — `JsonValidator`: проверка контракта на копии перед публикацией.
 - **`Workers/`** — `BackgroundService`-ы.
 
 ### Как добавить новый воркер
@@ -834,6 +954,8 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 2. В конструкторе запросить зависимости (`IOptions<T>`, `IMessagePublisher`).
 3. Реализовать `ExecuteAsync(CancellationToken)`, уважать `stoppingToken`.
 4. Зарегистрировать в `Program.cs`: `services.AddHostedService<NewWorker>();`.
+
+Логи, относящиеся к инфраструктуре (подключение, топология, порты), уходят с `cat="system"`, к работе с файлами — с `cat="data"`. Категория выводится автоматически из `SourceContext`, задавать её в вызовах не нужно.
 
 ### Как добавить новый источник сообщений
 
@@ -845,7 +967,8 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 ## Roadmap
 
 - [ ] **Consumer** — отдельный сервис, который забирает сообщения из `asumi.queue` и обрабатывает их.
-- [ ] **Валидация JSON** перед публикацией — битые файлы в отдельную папку `Failed`.
+- [x] **Валидация JSON** перед публикацией — неразбираемые файлы в `FailedPath`, метрика `files_failed_total{reason}`. См. раздел «Папка `FailedPath`».
+- [ ] **Тесты** — автотестов в решении нет ни одного; проверка сейчас только ручная и изолированная.
 - [ ] **Обработка повторных сбоев** — счётчик попыток по файлу, перенос «безнадёжных» в `Failed`.
 - [ ] **Версионность** — автоматический номер версии из Git (`Nerdbank.GitVersioning`).
 - [ ] **CI/CD** — сборка, тесты, публикация артефакта.
@@ -957,6 +1080,7 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
   "FilePublisher": {
     "SourcePath": "D:\\ASUMI\\SourceJson",
     "ProcessedPath": "D:\\ASUMI\\ProcessedJson",
+    "FailedPath": "D:\\ASUMI\\FailedJson",
     "PollIntervalSeconds": 10
   }
 }
