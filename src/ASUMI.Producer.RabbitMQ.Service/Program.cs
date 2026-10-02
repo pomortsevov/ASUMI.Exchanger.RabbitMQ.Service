@@ -158,6 +158,29 @@ public class Program
                 startupLogger.LogInformation("Loki sink disabled by configuration.");
             }
 
+            // Границы запуска видны и в файле, и в Loki. Без них перезапуск неотличим от
+            // паузы: между последней записью одного процесса и первой следующего нет
+            // ничего, и в Grafana выглядит так, будто служба замолчала. Разделитель
+            // печатается ПОСЛЕ Build(), иначе строка уйдёт только в консоль и файл,
+            // а в Loki рестарт по-прежнему не виден.
+            var startedAt = DateTimeOffset.UtcNow;
+            var pid = Environment.ProcessId;
+            var machine = Environment.MachineName;
+
+            startupLogger.LogInformation(
+                StartBanner,
+                ServiceConstants.ServiceName, version, pid, machine,
+                startedAt.ToString("yyyy-MM-dd HH:mm:ss zzz", invariant));
+
+            // Метка остановки нужна, чтобы отличить плановый перезапуск от падения и
+            // увидеть, сколько служба проработала. Регистрируется до Run, иначе
+            // остановка по сигналу от SCM не попала бы в лог вовсе.
+            host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(() =>
+                startupLogger.LogInformation(
+                    StopBanner,
+                    ServiceConstants.ServiceName, version, pid, machine,
+                    FormatUptime(DateTimeOffset.UtcNow - startedAt)));
+
             host.Run();
             return 0;
         }
@@ -171,4 +194,27 @@ public class Program
             Log.CloseAndFlush();
         }
     }
+
+    /// <summary>
+    /// Разделитель на старте. Хеши нужны для двух вещей: глазу в консоли и поиску в Loki
+    /// запросом |= "####" — так находится любая граница запуска независимо от уровня.
+    /// </summary>
+    /// <remarks>
+    /// Шаблон константный, а не собирается склейкой: так срабатывает проверка CA2254 и
+    /// значения остаются полями события, а не готовым текстом. Version, Pid и Host вставлены
+    /// намеренно — без них два рестарта подряд неразличимы, а PID нужен, чтобы сопоставить
+    /// запись с процессом в диспетчере и с журналом событий Windows.
+    /// </remarks>
+    private const string StartBanner =
+        "######## {ServiceName} STARTED v{Version} pid={Pid} host={Host} at {StartedAt} ########";
+
+    /// <summary>Разделитель на остановке: видно, что выход был штатным, и сколько шла служба.</summary>
+    private const string StopBanner =
+        "######## {ServiceName} STOPPED v{Version} pid={Pid} host={Host} uptime={Uptime} ########";
+
+    /// <summary>Время работы в форме чч:мм:сс. Часы набегают через сутки и дальше.</summary>
+    private static string FormatUptime(TimeSpan uptime) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{(int)uptime.TotalHours:00}:{uptime.Minutes:00}:{uptime.Seconds:00}");
 }
