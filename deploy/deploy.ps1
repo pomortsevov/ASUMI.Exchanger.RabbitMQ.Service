@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Развёртывание ASUMI.Producer.RabbitMQ.Service на Windows Server.
+    Развёртывание ASUMI.Exchanger.RabbitMQ.Service на Windows Server.
 
 .DESCRIPTION
     Скрипт выполняет:
@@ -280,7 +280,7 @@ Write-Step "Шаг 5. Создание службы '$ServiceName'"
 
 Invoke-OnTarget -ScriptBlock {
     param($svcName, $svcPath)
-    $exePath = Join-Path $svcPath "ASUMI.Producer.RabbitMQ.Service.exe"
+    $exePath = Join-Path $svcPath "ASUMI.Exchanger.RabbitMQ.Service.exe"
     
     & sc.exe create $svcName binPath= $exePath start= auto DisplayName= $svcName | Out-Null
     & sc.exe description $svcName "Publishes ASUMI contract JSON files to RabbitMQ." | Out-Null

@@ -1,6 +1,6 @@
-# ASUMI.Producer.RabbitMQ.Service
+# ASUMI.Exchanger.RabbitMQ.Service
 
-[![build](https://github.com/pomortsevov/ASUMI.Producer.RabbitMQ.Service/actions/workflows/build.yml/badge.svg)](https://github.com/pomortsevov/ASUMI.Producer.RabbitMQ.Service/actions/workflows/build.yml)
+[![build](https://github.com/pomortsevov/ASUMI.Exchanger.RabbitMQ.Service/actions/workflows/build.yml/badge.svg)](https://github.com/pomortsevov/ASUMI.Exchanger.RabbitMQ.Service/actions/workflows/build.yml)
 
 
 Windows-служба на .NET 8 для публикации JSON-файлов с договорами из СЭД **АСУМИ** в RabbitMQ.
@@ -60,14 +60,14 @@ Windows-служба на .NET 8 для публикации JSON-файлов �
 ## Структура репозитория
 
 ```
-ASUMI.Producer.RabbitMQ.Service/
-├── ASUMI.Producer.RabbitMQ.Service.sln
+ASUMI.Exchanger.RabbitMQ.Service/
+├── ASUMI.Exchanger.RabbitMQ.Service.sln
 ├── Directory.Build.props
 ├── .gitignore
 ├── README.md
 └── src/
-    └── ASUMI.Producer.RabbitMQ.Service/
-        ├── ASUMI.Producer.RabbitMQ.Service.csproj
+    └── ASUMI.Exchanger.RabbitMQ.Service/
+        ├── ASUMI.Exchanger.RabbitMQ.Service.csproj
         ├── Program.cs
         ├── appsettings.json
         ├── appsettings.Development.json
@@ -96,7 +96,7 @@ ASUMI.Producer.RabbitMQ.Service/
         │   ├── LogCategories.cs
         │   ├── LogValueText.cs
         │   ├── MetricsServerHostedService.cs
-        │   └── ProducerMetrics.cs
+        │   └── ExchangerMetrics.cs
         ├── Validation/
         │   └── JsonValidator.cs
         └── Workers/
@@ -182,14 +182,14 @@ Management UI: <http://localhost:15672>. Учётные данные броке�
 
 ```powershell
 $env:RabbitMQ__Password = "StrongP@ss"
-dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
+dotnet run --project src\ASUMI.Exchanger.RabbitMQ.Service
 ```
 
 По умолчанию берётся окружение `Production` и `appsettings.json`. Чтобы использовать `appsettings.Development.json`:
 
 ```powershell
 $env:DOTNET_ENVIRONMENT = "Development"
-dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
+dotnet run --project src\ASUMI.Exchanger.RabbitMQ.Service
 ```
 
 > **Что меняется в Development.** В `appsettings.Development.json` переопределяются параметры подключения к RabbitMQ (`HostName`, `UserName`, `MessageTtlMs`, `QueueType`, `QuorumInitialGroupSize`) и `PublishConfirmTimeoutSeconds`. Все остальные настройки (`FilePublisher.SourcePath`, `ProcessedPath` и т.д.) берутся из `appsettings.json` — то есть `dotnet run` работает с теми же папками `C:\SourceJson` и `C:\ProcessedJson`, что и продакшен-служба.
@@ -204,7 +204,7 @@ dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 [15:52:00 INF] Loki sink enabled for http://172.18.28.118:3100, job=ASUMI.Producer.RabbitMQ.Service.
 [15:52:00 INF] Declaring RabbitMQ topology...
 [15:52:00 INF] Attempting to connect to RabbitMQ at 172.18.28.118:5672/ as NSK-ASUMI-PRODUCER...
-[15:52:00 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Producer.RabbitMQ.Service
+[15:52:00 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Exchanger.RabbitMQ.Service
 [15:52:05 INF] Exchange declared: asumi.exchange (topic, durable)
 [15:52:05 INF] Queue declared: asumi.queue (durable, type=quorum, TTL=300000ms)
 [15:52:05 INF] Queue bound: asumi.queue -> asumi.exchange (routingKey=asumi.json)
@@ -235,7 +235,7 @@ dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 Как только RabbitMQ поднимется — служба автоматически подключится и продолжит работу:
 
 ```
-[15:55:24 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Producer.RabbitMQ.Service
+[15:55:24 INF] Connected to RabbitMQ. ConnectionName=ASUMI.Exchanger.RabbitMQ.Service
 [15:55:29 INF] Published Z_25.01.22_13-42__d.ID-6_b.ID-.json (1330 bytes) to exchange asumi.exchange with routingKey asumi.json.
 [15:55:29 INF] Moved to processed: Z_25.01.22_13-42__d.ID-6_b.ID--20260921-155529934.json
 ```
@@ -243,7 +243,7 @@ dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
 ## Публикация
 
 ```powershell
-dotnet publish src\ASUMI.Producer.RabbitMQ.Service -c Release -o C:\Services\ASUMI.Producer.RabbitMQ.Service
+dotnet publish src\ASUMI.Exchanger.RabbitMQ.Service -c Release -o C:\Services\ASUMI.Producer.RabbitMQ.Service
 ```
 
 > **Важно:** папка `C:\Services\...` должна быть свободна, либо установленная служба должна быть остановлена и удалена — иначе `.exe` будет залочен и `dotnet publish` упадёт с `IOException`.
@@ -251,7 +251,7 @@ dotnet publish src\ASUMI.Producer.RabbitMQ.Service -c Release -o C:\Services\ASU
 На выходе:
 
 ```
-ASUMI.Producer.RabbitMQ.Service.exe
+ASUMI.Exchanger.RabbitMQ.Service.exe
 appsettings.json
 appsettings.Development.json
 ```
@@ -263,7 +263,7 @@ appsettings.Development.json
 ### 1. Создать службу
 
 ```powershell
-sc.exe create "ASUMI Producer RabbitMQ Service" binPath= "C:\Services\ASUMI.Producer.RabbitMQ.Service\ASUMI.Producer.RabbitMQ.Service.exe" start= auto DisplayName= "ASUMI Producer RabbitMQ Service"
+sc.exe create "ASUMI Producer RabbitMQ Service" binPath= "C:\Services\ASUMI.Producer.RabbitMQ.Service\ASUMI.Exchanger.RabbitMQ.Service.exe" start= auto DisplayName= "ASUMI Producer RabbitMQ Service"
 ```
 
 > Пробелы после `binPath=`, `start=`, `DisplayName=` обязательны.
@@ -335,7 +335,7 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
     "AutomaticRecovery": true,
     "NetworkRecoveryIntervalSeconds": 10,
     "ReconnectIntervalSeconds": 5,
-    "ConnectionName": "ASUMI.Producer.RabbitMQ.Service"
+    "ConnectionName": "ASUMI.Exchanger.RabbitMQ.Service"
   },
   "FilePublisher": {
     "Enabled": true,
@@ -394,7 +394,7 @@ Get-Content C:\Services\ASUMI.Producer.RabbitMQ.Service\logs\asumi-producer-rabb
 | `NetworkRecoveryIntervalSeconds` | Интервал авто-восстановления (после разрыва) | `10` |
 | `ReconnectIntervalSeconds` | Интервал попыток при первом подключении | `5` |
 | `RepeatWarningIntervalSeconds` | Как часто повторяется сообщение об одной и той же ошибке | `300` |
-| `ConnectionName` | Имя соединения в UI RabbitMQ | `ASUMI.Producer.RabbitMQ.Service` |
+| `ConnectionName` | Имя соединения в UI RabbitMQ | `ASUMI.Exchanger.RabbitMQ.Service` |
 
 `RepeatWarningIntervalSeconds` ограничивает только частоту записи повторяющейся ошибки в лог. Интервал между попытками переподключения он не меняет, и задержки на восстановление не добавляет — нужен, чтобы лежащий брокер не заваливал Loki одинаковыми строками. Внутри сообщения видно число подряд идущих неудач.
 
@@ -442,7 +442,7 @@ sc.exe start "ASUMI Producer RabbitMQ Service"
 
 ```powershell
 $env:RabbitMQ__Password = "StrongP@ss"
-dotnet run --project src\ASUMI.Producer.RabbitMQ.Service
+dotnet run --project src\ASUMI.Exchanger.RabbitMQ.Service
 ```
 
 На сервере — постоянно, для всех новых процессов:
@@ -551,7 +551,7 @@ Sink добавляет к каждому потоку четыре метки:
 | Метка | Значение | Зачем |
 |---|---|---|
 | `job` | `ASUMI.Producer.RabbitMQ.Service` | выбор потока в Grafana |
-| `service_name` | `ASUMI.Producer.RabbitMQ.Service` | совпадает с именем сборки |
+| `service_name` | `ASUMI.Producer.RabbitMQ.Service` | имя службы в SCM; переименовывается отдельным шагом |
 | `env` | `Production` / `Development` | разделение боевых и локальных запусков |
 | `host` | имя машины, например `NSK-NA02` | на какой машине шел процесс |
 
@@ -665,16 +665,16 @@ url=http://+:9101/ user="<account>"
 
 | Имя | Тип | Что показывает |
 |---|---|---|
-| `asumi_producer_files_pending` | gauge | файлов в `SourcePath` на последнем сканировании |
-| `asumi_producer_files_published_total` | counter | подтверждённо опубликованных файлов |
-| `asumi_producer_files_failed_total` | counter | файлов, не попавших в очередь, с меткой `reason` |
-| `asumi_producer_files_deferred_total` | counter | публикаций, отложенных из-за недоступного RabbitMQ |
-| `asumi_producer_publish_duration_seconds` | histogram | от чтения файла до подтверждения брокером |
-| `asumi_producer_rabbitmq_connected` | gauge | 1/0, состояние соединения с RabbitMQ |
-| `asumi_producer_last_publish_timestamp_seconds` | gauge | время последней подтверждённой публикации |
-| `asumi_producer_files_unexpected_encoding_total` | counter | файлов без ожидаемого UTF-16 BOM |
+| `asumi_exchanger_files_pending` | gauge | файлов в `SourcePath` на последнем сканировании |
+| `asumi_exchanger_files_published_total` | counter | подтверждённо опубликованных файлов |
+| `asumi_exchanger_files_failed_total` | counter | файлов, не попавших в очередь, с меткой `reason` |
+| `asumi_exchanger_files_deferred_total` | counter | публикаций, отложенных из-за недоступного RabbitMQ |
+| `asumi_exchanger_publish_duration_seconds` | histogram | от чтения файла до подтверждения брокером |
+| `asumi_exchanger_rabbitmq_connected` | gauge | 1/0, состояние соединения с RabbitMQ |
+| `asumi_exchanger_last_publish_timestamp_seconds` | gauge | время последней подтверждённой публикации |
+| `asumi_exchanger_files_unexpected_encoding_total` | counter | файлов без ожидаемого UTF-16 BOM |
 
-У `asumi_producer_files_failed_total` есть метка `reason`:
+У `asumi_exchanger_files_failed_total` есть метка `reason`:
 
 | Значение | Когда |
 |---|---|
@@ -683,7 +683,7 @@ url=http://+:9101/ user="<account>"
 
 Имя метрики сохранено прежним, потому что на него завязаны существующие запросы и панели.
 
-Префикс `asumi_producer_` выбран, чтобы не пересечься с мёртвыми `asumi_*` от старого питоновского экспортёра, на который ссылается дашборд.
+Префикс `asumi_exchanger_` выбран, чтобы не пересечься с мёртвыми `asumi_*` от старого питоновского экспортёра, на который ссылается дашборд.
 
 `files_deferred_total` и `files_unexpected_encoding_total` в дашборде не использовались, но отвечают на вопросы, которые иначе видны только по логам: почему растёт `files_pending`, и не изменился ли формат файлов на стороне АСУМИ.
 
@@ -755,7 +755,7 @@ netsh http add urlacl url=http://+:9101/ user="NT AUTHORITY\SYSTEM"
 ### Метрика
 
 ```promql
-sum by (reason) (rate(asumi_producer_files_failed_total[15m]))
+sum by (reason) (rate(asumi_exchanger_files_failed_total[15m]))
 ```
 
 ### Известная проблема АСУМИ
@@ -789,14 +789,14 @@ sc.exe delete "ASUMI Producer RabbitMQ Service"
 Start-Sleep -Seconds 2
 
 # 3. Убедиться, что процесс мёртв
-Get-Process -Name "ASUMI.Producer.RabbitMQ.Service" -ErrorAction SilentlyContinue
+Get-Process -Name "ASUMI.Exchanger.RabbitMQ.Service" -ErrorAction SilentlyContinue
 
 # 4. Пересобрать
-cd C:\Develop\PilotICE\RabbitMQ\ASUMI.Producer.RabbitMQ.Service
-dotnet publish src\ASUMI.Producer.RabbitMQ.Service -c Release -o C:\Services\ASUMI.Producer.RabbitMQ.Service
+cd C:\Develop\mechel\ASUMI.Exchanger.RabbitMQ.Service
+dotnet publish src\ASUMI.Exchanger.RabbitMQ.Service -c Release -o C:\Services\ASUMI.Producer.RabbitMQ.Service
 
 # 5. Создать и запустить заново
-sc.exe create "ASUMI Producer RabbitMQ Service" binPath= "C:\Services\ASUMI.Producer.RabbitMQ.Service\ASUMI.Producer.RabbitMQ.Service.exe" start= auto
+sc.exe create "ASUMI Producer RabbitMQ Service" binPath= "C:\Services\ASUMI.Producer.RabbitMQ.Service\ASUMI.Exchanger.RabbitMQ.Service.exe" start= auto
 sc.exe start "ASUMI Producer RabbitMQ Service"
 
 # 6. Проверить
@@ -815,7 +815,7 @@ Get-EventLog -LogName Application -Source "ASUMI Producer RabbitMQ Service" -New
 Если в логе `Another instance ... is already running` — процесс уже есть. Служба и консольный `dotnet run` не должны работать одновременно: два экземпляра опубликовали бы один контракт дважды. Mutex именованный и глобальный (`Global\`), поэтому он виден и службе в сессии 0, и запуску из сессии пользователя. Проверка:
 
 ```powershell
-Get-Process -Name "ASUMI.Producer.RabbitMQ.Service" -ErrorAction SilentlyContinue
+Get-Process -Name "ASUMI.Exchanger.RabbitMQ.Service" -ErrorAction SilentlyContinue
 ```
 
 ### RabbitMQ недоступен
@@ -853,7 +853,7 @@ wsl -e sh -c "docker logs monitoring_rabbitmq_1 --tail 30"
 Счётчик с разбивкой по причинам:
 
 ```promql
-sum by (reason) (asumi_producer_files_failed_total)
+sum by (reason) (asumi_exchanger_files_failed_total)
 ```
 
 Пока в папке лежат файлы, служба их не читает и в очередь они не идут. Разбор — за разработчиками АСУМИ: текущая маска `*.json` специально оставлена узкой, иначе в очередь попадал бы мусор вроде `backup.json.old.tmp`.
@@ -957,7 +957,7 @@ dotnet build
 ```powershell
 dotnet clean
 dotnet build-server shutdown
-Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.Producer.RabbitMQ.Service\bin -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force src\ASUMI.Exchanger.RabbitMQ.Service\obj, src\ASUMI.Exchanger.RabbitMQ.Service\bin -ErrorAction SilentlyContinue
 ```
 
 ### Структура кода
@@ -966,7 +966,7 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 - **`Configuration/`** — типизированные опции (`RabbitMqOptions`, `FilePublisherOptions`, `LokiOptions`, `MetricsOptions`) с валидацией через DataAnnotations.
 - **`Hosting/`** — `ServiceConstants`, `PasswordResolver` (определяет, из какого scope окружения взят пароль).
 - **`Infrastructure/`** — реализации: подключение, публикация, объявление топологии.
-- **`Observability/`** — `LokiSink` (свой, без сторонних пакетов), `LokiLogFormatter` и `LogCategories` (категория записи как поле `cat`), `LogValueText`, `ProducerMetrics`, `MetricsServerHostedService`.
+- **`Observability/`** — `LokiSink` (свой, без сторонних пакетов), `LokiLogFormatter` и `LogCategories` (категория записи как поле `cat`), `LogValueText`, `ExchangerMetrics`, `MetricsServerHostedService`.
 - **`Validation/`** — `JsonValidator`: проверка контракта на копии перед публикацией.
 - **`Workers/`** — `BackgroundService`-ы.
 
@@ -1031,9 +1031,9 @@ Remove-Item -Recurse -Force src\ASUMI.Producer.RabbitMQ.Service\obj, src\ASUMI.P
 
 **2. Скачайте артефакт из CI:**
 
-- Откройте https://github.com/pomortsevov/ASUMI.Producer.RabbitMQ.Service/actions
+- Откройте https://github.com/pomortsevov/ASUMI.Exchanger.RabbitMQ.Service/actions
 - Выберите свежий успешный запуск `build`.
-- Внизу страницы → **Artifacts** → `ASUMI.Producer.RabbitMQ.Service` → скачайте ZIP.
+- Внизу страницы → **Artifacts** → `ASUMI.Exchanger.RabbitMQ.Service` → скачайте ZIP.
 - Распакуйте и положите содержимое в `\\fileserver\share\ASUMI.Producer.RabbitMQ.Service\`.
 
 ### Запуск развёртывания
